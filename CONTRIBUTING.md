@@ -37,7 +37,7 @@ cargo clippy --workspace
 
 ## Reporting Issues
 
-If you find a bug or have a feature request, please [open an issue](https://github.com/joshrutkowski/cmd-ctl/issues).
+If you find a bug or have a feature request, please [open an issue](https://github.com/josh-matrat/cmd-ctl/issues).
 
 ## License
 
