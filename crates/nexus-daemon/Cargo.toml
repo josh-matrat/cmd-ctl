@@ -1,0 +1,15 @@
+[package]
+name = "nexus-daemon"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+nexus-terminal.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+bincode.workspace = true
+crossbeam-channel.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+parking_lot.workspace = true

@@ -1,0 +1,57 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nexus-terminal",
+    "crates/nexus-daemon",
+    "crates/nexus-renderer",
+    "crates/nexus-input",
+    "crates/nexus-app",
+    "crates/nexus-cli",
+]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+# Internal crates
+nexus-terminal = { path = "crates/nexus-terminal" }
+nexus-daemon = { path = "crates/nexus-daemon" }
+nexus-renderer = { path = "crates/nexus-renderer" }
+nexus-input = { path = "crates/nexus-input" }
+
+# Terminal emulation
+alacritty_terminal = "0.25"
+
+# Rendering
+metal = "0.33"
+core-graphics = "0.24"
+core-text = "21"
+objc2 = "0.6"
+foreign-types = "0.5"
+
+# Windowing
+winit = "0.30"
+raw-window-handle = "0.6"
+
+# Session management
+rusqlite = { version = "0.39", features = ["bundled"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+toml = "0.8"
+
+# Utilities
+crossbeam-channel = "0.5"
+uuid = { version = "1", features = ["v4"] }
+regex = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+anyhow = "1"
+parking_lot = "0.12"
+
+[profile.release]
+lto = "thin"
+opt-level = 3

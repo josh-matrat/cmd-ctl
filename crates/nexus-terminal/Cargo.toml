@@ -1,0 +1,12 @@
+[package]
+name = "nexus-terminal"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+alacritty_terminal.workspace = true
+crossbeam-channel.workspace = true
+regex.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
