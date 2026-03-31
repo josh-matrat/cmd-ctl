@@ -1,0 +1,15 @@
+[package]
+name = "cmdctl-renderer"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+metal.workspace = true
+core-foundation = "0.10"
+core-graphics.workspace = true
+core-text.workspace = true
+objc2.workspace = true
+foreign-types.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+parking_lot.workspace = true

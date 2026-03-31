@@ -1,1 +1,6 @@
 target/
+bundle/
+*.db
+*.pid
+*.sock
+.DS_Store

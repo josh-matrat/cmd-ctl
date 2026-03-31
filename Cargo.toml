@@ -1,25 +1,33 @@
 [workspace]
 resolver = "2"
+default-members = ["crates/cmdctl-app"]
 members = [
-    "crates/nexus-terminal",
-    "crates/nexus-daemon",
-    "crates/nexus-renderer",
-    "crates/nexus-input",
-    "crates/nexus-app",
-    "crates/nexus-cli",
+    "crates/cmdctl-terminal",
+    "crates/cmdctl-daemon",
+    "crates/cmdctl-renderer",
+    "crates/cmdctl-input",
+    "crates/cmdctl-tickets",
+    "crates/cmdctl-knowledge",
+    "crates/cmdctl-app",
+    "crates/cmdctl-cli",
 ]
 
 [workspace.package]
 edition = "2021"
 version = "0.1.0"
 license = "MIT"
+description = "GPU-accelerated terminal emulator and AI agent orchestrator for macOS"
+repository = "https://github.com/joshrutkowski/cmd-ctl"
+homepage = "https://github.com/joshrutkowski/cmd-ctl"
 
 [workspace.dependencies]
 # Internal crates
-nexus-terminal = { path = "crates/nexus-terminal" }
-nexus-daemon = { path = "crates/nexus-daemon" }
-nexus-renderer = { path = "crates/nexus-renderer" }
-nexus-input = { path = "crates/nexus-input" }
+cmdctl-terminal = { path = "crates/cmdctl-terminal" }
+cmdctl-daemon = { path = "crates/cmdctl-daemon" }
+cmdctl-renderer = { path = "crates/cmdctl-renderer" }
+cmdctl-input = { path = "crates/cmdctl-input" }
+cmdctl-tickets = { path = "crates/cmdctl-tickets" }
+cmdctl-knowledge = { path = "crates/cmdctl-knowledge" }
 
 # Terminal emulation
 alacritty_terminal = "0.25"

@@ -1,0 +1,28 @@
+[package]
+name = "cmdctl-app"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "cmdctl"
+path = "src/main.rs"
+
+[dependencies]
+cmdctl-terminal.workspace = true
+cmdctl-daemon.workspace = true
+cmdctl-renderer.workspace = true
+cmdctl-input.workspace = true
+alacritty_terminal.workspace = true
+metal.workspace = true
+winit.workspace = true
+raw-window-handle.workspace = true
+objc2.workspace = true
+foreign-types.workspace = true
+core-graphics.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+dirs = "6"
+shellexpand = "3"

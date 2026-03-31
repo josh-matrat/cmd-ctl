@@ -1,0 +1,13 @@
+[package]
+name = "cmdctl-cli"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "cmdctl-cli"
+path = "src/main.rs"
+
+[dependencies]
+cmdctl-daemon.workspace = true
+serde.workspace = true
+anyhow.workspace = true

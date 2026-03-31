@@ -1,0 +1,20 @@
+[package]
+name = "cmdctl-daemon"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+cmdctl-terminal.workspace = true
+cmdctl-tickets.workspace = true
+cmdctl-knowledge.workspace = true
+alacritty_terminal.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+bincode.workspace = true
+crossbeam-channel.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+parking_lot.workspace = true
+dirs = "6"
+libc = "0.2"

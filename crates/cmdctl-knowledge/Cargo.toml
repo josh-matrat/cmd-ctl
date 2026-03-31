@@ -1,0 +1,13 @@
+[package]
+name = "cmdctl-knowledge"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+rusqlite = { workspace = true, features = ["bundled"] }
+serde.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+regex.workspace = true
+dirs = "6"

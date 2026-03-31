@@ -1,0 +1,11 @@
+[package]
+name = "cmdctl-tickets"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+serde.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+toml.workspace = true
+dirs = "6"

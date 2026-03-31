@@ -234,6 +234,118 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
+name = "cmdctl-app"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
+ "anyhow",
+ "cmdctl-daemon",
+ "cmdctl-input",
+ "cmdctl-renderer",
+ "cmdctl-terminal",
+ "core-graphics 0.24.0",
+ "crossbeam-channel",
+ "dirs",
+ "foreign-types",
+ "metal",
+ "objc2 0.6.4",
+ "parking_lot",
+ "raw-window-handle",
+ "shellexpand",
+ "tracing",
+ "tracing-subscriber",
+ "winit",
+]
+
+[[package]]
+name = "cmdctl-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cmdctl-daemon",
+ "serde",
+]
+
+[[package]]
+name = "cmdctl-daemon"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
+ "anyhow",
+ "bincode",
+ "cmdctl-knowledge",
+ "cmdctl-terminal",
+ "cmdctl-tickets",
+ "crossbeam-channel",
+ "dirs",
+ "libc",
+ "parking_lot",
+ "rusqlite",
+ "serde",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "cmdctl-input"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "cmdctl-knowledge"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "regex",
+ "rusqlite",
+ "serde",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "cmdctl-renderer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "core-foundation 0.10.1",
+ "core-graphics 0.24.0",
+ "core-text",
+ "foreign-types",
+ "metal",
+ "objc2 0.6.4",
+ "parking_lot",
+ "tracing",
+]
+
+[[package]]
+name = "cmdctl-terminal"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
+ "crossbeam-channel",
+ "parking_lot",
+ "regex",
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "cmdctl-tickets"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "serde",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "combine"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -358,6 +470,27 @@ name = "cursor-icon"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
+
+[[package]]
+name = "dirs"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
+name = "dirs-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e01a3366d27ee9890022452ee61b2b63a67e6f13f58900b651ff5665f0bb1fab"
+dependencies = [
+ "libc",
+ "option-ext",
+ "redox_users",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "dispatch"
@@ -503,6 +636,17 @@ checksum = "1bd49230192a3797a9a4d6abe9b3eed6f7fa4c8a8a4947977c6f80025f92cbd8"
 dependencies = [
  "rustix 1.1.4",
  "windows-link",
+]
+
+[[package]]
+name = "getrandom"
+version = "0.2.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "wasi",
 ]
 
 [[package]]
@@ -839,85 +983,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nexus-app"
-version = "0.1.0"
-dependencies = [
- "alacritty_terminal",
- "anyhow",
- "core-graphics 0.24.0",
- "crossbeam-channel",
- "foreign-types",
- "metal",
- "nexus-input",
- "nexus-renderer",
- "nexus-terminal",
- "objc2 0.6.4",
- "parking_lot",
- "raw-window-handle",
- "tracing",
- "tracing-subscriber",
- "winit",
-]
-
-[[package]]
-name = "nexus-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "nexus-daemon",
- "serde",
-]
-
-[[package]]
-name = "nexus-daemon"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bincode",
- "crossbeam-channel",
- "nexus-terminal",
- "parking_lot",
- "rusqlite",
- "serde",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "nexus-input"
-version = "0.1.0"
-dependencies = [
- "serde",
- "tracing",
-]
-
-[[package]]
-name = "nexus-renderer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "core-graphics 0.24.0",
- "core-text",
- "foreign-types",
- "metal",
- "objc2 0.6.4",
- "parking_lot",
- "tracing",
-]
-
-[[package]]
-name = "nexus-terminal"
-version = "0.1.0"
-dependencies = [
- "alacritty_terminal",
- "crossbeam-channel",
- "parking_lot",
- "regex",
- "serde",
- "tracing",
-]
-
-[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1176,6 +1241,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
+name = "option-ext"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
 name = "orbclient"
 version = "0.3.51"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1308,7 +1379,7 @@ version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e67ba7e9b2b56446f1d419b1d807906278ffa1a658a8a5d8a39dcb1f5a78614f"
 dependencies = [
- "toml_edit",
+ "toml_edit 0.25.8+spec-1.1.0",
 ]
 
 [[package]]
@@ -1381,6 +1452,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce70a74e890531977d37e532c34d45e9055d2409ed08ddba14529471ed0be16"
 dependencies = [
  "bitflags 2.11.0",
+]
+
+[[package]]
+name = "redox_users"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4e608c6638b9c18977b00b475ac1f28d14e84b27d8d42f70e0bf1e3dec127ac"
+dependencies = [
+ "getrandom 0.2.17",
+ "libredox",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1573,12 +1655,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_spanned"
+version = "0.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf41e0cfaf7226dca15e8197172c295a782857fcb97fad1808a166870dee75a3"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "sharded-slab"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
+]
+
+[[package]]
+name = "shellexpand"
+version = "3.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32824fab5e16e6c4d86dc1ba84489390419a39f97699852b66480bb87d297ed8"
+dependencies = [
+ "dirs",
 ]
 
 [[package]]
@@ -1773,6 +1873,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml"
+version = "0.8.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc1beb996b9d83529a9e75c17a1686767d148d70663143c7854d8b4a09ced362"
+dependencies = [
+ "serde",
+ "serde_spanned",
+ "toml_datetime 0.6.11",
+ "toml_edit 0.22.27",
+]
+
+[[package]]
+name = "toml_datetime"
+version = "0.6.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22cddaf88f4fbc13c51aebbf5f8eceb5c7c5a9da2ac40a13519eb5b0a0e8f11c"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "toml_datetime"
 version = "1.1.0+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1783,14 +1904,28 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
+version = "0.22.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41fe8c660ae4257887cf66394862d21dbca4a6ddd26f04a3560410406a2f819a"
+dependencies = [
+ "indexmap",
+ "serde",
+ "serde_spanned",
+ "toml_datetime 0.6.11",
+ "toml_write",
+ "winnow 0.7.15",
+]
+
+[[package]]
+name = "toml_edit"
 version = "0.25.8+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "16bff38f1d86c47f9ff0647e6838d7bb362522bdf44006c7068c2b1e606f1f3c"
 dependencies = [
  "indexmap",
- "toml_datetime",
+ "toml_datetime 1.1.0+spec-1.1.0",
  "toml_parser",
- "winnow",
+ "winnow 1.0.1",
 ]
 
 [[package]]
@@ -1799,8 +1934,14 @@ version = "1.1.0+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2334f11ee363607eb04df9b8fc8a13ca1715a72ba8662a26ac285c98aabb4011"
 dependencies = [
- "winnow",
+ "winnow 1.0.1",
 ]
+
+[[package]]
+name = "toml_write"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "tracing"
@@ -1941,6 +2082,12 @@ dependencies = [
  "same-file",
  "winapi-util",
 ]
+
+[[package]]
+name = "wasi"
+version = "0.11.1+wasi-snapshot-preview1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
 name = "wasip2"
@@ -2334,6 +2481,15 @@ dependencies = [
  "x11-dl",
  "x11rb",
  "xkbcommon-dl",
+]
+
+[[package]]
+name = "winnow"
+version = "0.7.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

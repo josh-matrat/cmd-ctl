@@ -1,0 +1,123 @@
+//! Ticket manager — owns providers, handles caching and refresh.
+
+use std::time::{Duration, Instant};
+
+use tracing;
+
+use crate::config;
+use crate::imperrium::ImperriumProvider;
+use crate::jira::JiraProvider;
+use crate::notion::NotionProvider;
+use crate::provider::{Ticket, TicketProvider};
+
+/// How often to auto-refresh tickets from providers.
+const REFRESH_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
+
+pub struct TicketManager {
+    providers: Vec<Box<dyn TicketProvider>>,
+    cached_tickets: Vec<Ticket>,
+    last_refresh: Option<Instant>,
+}
+
+impl TicketManager {
+    /// Create a new manager, loading provider config from disk.
+    pub fn new() -> Self {
+        let mut providers: Vec<Box<dyn TicketProvider>> = Vec::new();
+
+        match config::load_config() {
+            Ok(cfg) => {
+                if let Some(jira_cfg) = cfg.jira {
+                    tracing::info!("Loaded Jira ticket provider for {}", jira_cfg.url);
+                    providers.push(Box::new(JiraProvider::new(jira_cfg)));
+                }
+                if let Some(notion_cfg) = cfg.notion {
+                    tracing::info!("Loaded Notion ticket provider");
+                    providers.push(Box::new(NotionProvider::new(notion_cfg)));
+                }
+                if let Some(imp_cfg) = cfg.imperrium {
+                    tracing::info!("Loaded Imperrium ticket provider for {}", imp_cfg.url);
+                    providers.push(Box::new(ImperriumProvider::new(imp_cfg)));
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load ticket provider config: {}", e);
+            }
+        }
+
+        if providers.is_empty() {
+            tracing::debug!("No ticket providers configured. Edit ~/.cmdctl/providers.toml to add one.");
+        }
+
+        Self {
+            providers,
+            cached_tickets: Vec::new(),
+            last_refresh: None,
+        }
+    }
+
+    /// Returns true if any providers are configured.
+    pub fn has_providers(&self) -> bool {
+        !self.providers.is_empty()
+    }
+
+    /// Get cached tickets, refreshing if stale.
+    pub fn tickets(&mut self) -> &[Ticket] {
+        let should_refresh = match self.last_refresh {
+            None => true,
+            Some(t) => t.elapsed() > REFRESH_INTERVAL,
+        };
+        if should_refresh {
+            self.refresh();
+        }
+        &self.cached_tickets
+    }
+
+    /// Force a refresh from all providers.
+    pub fn refresh(&mut self) {
+        let mut all_tickets = Vec::new();
+        for provider in &self.providers {
+            match provider.fetch_tickets() {
+                Ok(tickets) => {
+                    tracing::info!("Fetched {} tickets from {}", tickets.len(), provider.name());
+                    all_tickets.extend(tickets);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to fetch tickets from {}: {}", provider.name(), e);
+                }
+            }
+        }
+
+        // Sort: blocked/in-progress first, then by priority.
+        all_tickets.sort_by(|a, b| {
+            let status_ord = |t: &Ticket| -> u8 {
+                match &t.status {
+                    crate::provider::TicketStatus::Blocked => 0,
+                    crate::provider::TicketStatus::InProgress => 1,
+                    crate::provider::TicketStatus::InReview => 2,
+                    crate::provider::TicketStatus::Todo => 3,
+                    crate::provider::TicketStatus::Done => 5,
+                    crate::provider::TicketStatus::Custom(_) => 4,
+                }
+            };
+            let prio_ord = |t: &Ticket| -> u8 {
+                match t.priority {
+                    crate::provider::TicketPriority::Critical => 0,
+                    crate::provider::TicketPriority::High => 1,
+                    crate::provider::TicketPriority::Medium => 2,
+                    crate::provider::TicketPriority::Low => 3,
+                    crate::provider::TicketPriority::None => 4,
+                }
+            };
+            status_ord(a).cmp(&status_ord(b))
+                .then(prio_ord(a).cmp(&prio_ord(b)))
+        });
+
+        self.cached_tickets = all_tickets;
+        self.last_refresh = Some(Instant::now());
+    }
+
+    /// Get a ticket by key.
+    pub fn get_ticket(&self, key: &str) -> Option<&Ticket> {
+        self.cached_tickets.iter().find(|t| t.key == key)
+    }
+}
