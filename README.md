@@ -4,7 +4,7 @@ A GPU-accelerated terminal emulator and AI agent orchestrator for macOS.
 
 CMD CTL is a native macOS terminal built with Metal rendering that doubles as a command center for managing multiple shell and AI agent sessions side-by-side. It uses [alacritty_terminal](https://github.com/alacritty/alacritty) for terminal emulation and renders everything through a custom Metal pipeline.
 
-<img width="1503" height="948" alt="image" src="https://github.com/user-attachments/assets/a44d8c69-a9a2-4d19-b91f-abd0c72cc35e" />
+<img width="1512" height="770" alt="image" src="https://github.com/user-attachments/assets/e5bf0a5b-38c6-40b5-8f24-fdb5413956a4" />
 
 > **Status:** Early alpha. Expect rough edges, missing features, and breaking changes. Feedback and contributions welcome.
 
