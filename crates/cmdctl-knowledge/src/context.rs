@@ -87,10 +87,10 @@ pub fn write_context_file(store: &KnowledgeStore, working_dir: &str) -> Result<O
         return Ok(None);
     }
 
-    let dir = Path::new(working_dir);
-    if !dir.is_dir() {
-        return Ok(None);
-    }
+    let dir = match Path::new(working_dir).canonicalize() {
+        Ok(d) if d.is_dir() => d,
+        _ => return Ok(None),
+    };
 
     let context_path = dir.join(".cmdctl-context.md");
     let full_content = format!(
@@ -101,7 +101,7 @@ pub fn write_context_file(store: &KnowledgeStore, working_dir: &str) -> Result<O
     fs::write(&context_path, &full_content)?;
 
     // Ensure CLAUDE.md references the context file.
-    ensure_claude_md_reference(dir)?;
+    ensure_claude_md_reference(&dir)?;
 
     let path_str = context_path.to_string_lossy().to_string();
     tracing::info!("Wrote context file: {}", path_str);
@@ -130,7 +130,11 @@ fn ensure_claude_md_reference(dir: &Path) -> Result<()> {
 
 /// Remove the context file from a working directory (cleanup).
 pub fn remove_context_file(working_dir: &str) -> Result<()> {
-    let path = Path::new(working_dir).join(".cmdctl-context.md");
+    let dir = match Path::new(working_dir).canonicalize() {
+        Ok(d) => d,
+        Err(_) => return Ok(()),
+    };
+    let path = dir.join(".cmdctl-context.md");
     if path.exists() {
         fs::remove_file(&path)?;
     }

@@ -2,6 +2,9 @@
 //!
 //! Queries a Notion database via the Notion API and maps entries to tickets.
 
+use std::io::Write;
+use std::process::Stdio;
+
 use anyhow::{Context, Result};
 use tracing;
 
@@ -31,15 +34,25 @@ impl NotionProvider {
 
     /// Resolve a user email to a Notion user ID via the users list API.
     fn resolve_user_id_by_email(&self, email: &str) -> Result<Option<String>> {
-        let output = std::process::Command::new("curl")
+        let mut child = std::process::Command::new("curl")
             .args([
-                "-sS",
-                "-H", &format!("Authorization: Bearer {}", self.config.api_token),
+                "-sS", "--config", "-",
                 "-H", "Notion-Version: 2022-06-28",
                 "https://api.notion.com/v1/users",
             ])
-            .output()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .context("Failed to execute curl for Notion users API")?;
+
+        // Pass auth header via stdin to avoid leaking in process args
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = write!(stdin, "header = \"Authorization: Bearer {}\"\n", self.config.api_token);
+        }
+
+        let output = child.wait_with_output()
+            .context("Failed to wait for curl process")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -121,17 +134,27 @@ impl NotionProvider {
             "{}".to_string()
         };
 
-        let output = std::process::Command::new("curl")
+        let mut child = std::process::Command::new("curl")
             .args([
-                "-sS", "-X", "POST",
-                "-H", &format!("Authorization: Bearer {}", self.config.api_token),
+                "-sS", "-X", "POST", "--config", "-",
                 "-H", "Content-Type: application/json",
                 "-H", "Notion-Version: 2022-06-28",
                 "-d", &body,
                 &url,
             ])
-            .output()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .context("Failed to execute curl for Notion API")?;
+
+        // Pass auth header via stdin to avoid leaking in process args
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = write!(stdin, "header = \"Authorization: Bearer {}\"\n", self.config.api_token);
+        }
+
+        let output = child.wait_with_output()
+            .context("Failed to wait for curl process")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

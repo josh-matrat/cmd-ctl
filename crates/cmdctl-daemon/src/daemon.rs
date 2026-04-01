@@ -55,7 +55,11 @@ pub fn is_running() -> bool {
     let pid_path = base_dir().join(PID_FILE);
     if let Ok(pid_str) = fs::read_to_string(&pid_path) {
         if let Ok(pid) = pid_str.trim().parse::<i32>() {
-            unsafe { libc::kill(pid, 0) == 0 }
+            if pid > 0 {
+                unsafe { libc::kill(pid, 0) == 0 }
+            } else {
+                false
+            }
         } else {
             false
         }
@@ -68,6 +72,13 @@ pub fn is_running() -> bool {
 pub fn start_background() -> Result<DaemonHandle> {
     let dir = base_dir();
     fs::create_dir_all(&dir)?;
+
+    // Restrict base directory to owner-only access.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+    }
 
     // Write PID file.
     fs::write(dir.join(PID_FILE), std::process::id().to_string())?;
@@ -139,6 +150,13 @@ fn run_server(
     let socket_path = dir.join(SOCKET_NAME);
     let listener = UnixListener::bind(&socket_path)
         .context("Failed to bind Unix socket")?;
+
+    // Restrict socket to owner-only access.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600));
+    }
+
     listener.set_nonblocking(true)?;
 
     tracing::info!("Daemon listening on {}", socket_path.display());
@@ -189,6 +207,19 @@ fn handle_client(
     running: Arc<AtomicBool>,
 ) -> Result<()> {
     stream.set_nonblocking(false)?;
+
+    // Verify the connecting process belongs to the same user.
+    {
+        use std::os::unix::io::AsRawFd;
+        let fd = stream.as_raw_fd();
+        let mut euid: libc::uid_t = 0;
+        let mut egid: libc::gid_t = 0;
+        let ret = unsafe { libc::getpeereid(fd, &mut euid, &mut egid) };
+        if ret != 0 || euid != unsafe { libc::getuid() } {
+            anyhow::bail!("IPC connection rejected: peer UID mismatch");
+        }
+    }
+
     stream.set_read_timeout(Some(Duration::from_secs(300)))?;
 
     loop {

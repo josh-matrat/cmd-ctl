@@ -30,14 +30,20 @@ fn main() {
             }
         }
         "kill" => {
-            let id = args.get(2).expect("Usage: cmdctl-cli kill <session-id>");
+            let Some(id) = args.get(2) else {
+                eprintln!("Usage: cmdctl-cli kill <session-id>");
+                std::process::exit(1);
+            };
             match client.kill_session(id) {
                 Ok(()) => println!("Killed session {}", id),
                 Err(e) => eprintln!("Error: {}", e),
             }
         }
         "dump" => {
-            let id = args.get(2).expect("Usage: cmdctl-cli dump <session-id>");
+            let Some(id) = args.get(2) else {
+                eprintln!("Usage: cmdctl-cli dump <session-id>");
+                std::process::exit(1);
+            };
             match client.get_grid(id) {
                 Ok(grid) => {
                     let mut rows: std::collections::BTreeMap<u16, Vec<(u16, char)>> = std::collections::BTreeMap::new();
@@ -92,7 +98,10 @@ fn main() {
                     }
                 }
                 "search" => {
-                    let query = args.get(3).expect("Usage: cmdctl-cli knowledge search <query>");
+                    let Some(query) = args.get(3) else {
+                        eprintln!("Usage: cmdctl-cli knowledge search <query>");
+                        std::process::exit(1);
+                    };
                     let scope = args.get(4).map(|s| s.as_str());
                     match client.search_knowledge(query, scope) {
                         Ok(entries) => {
@@ -118,14 +127,20 @@ fn main() {
                 "add" => {
                     // cmdctl-cli knowledge add <title> <scope> [tags]
                     // Content is read from stdin.
-                    let title = args.get(3).expect("Usage: cmdctl-cli knowledge add <title> <scope> [tags]");
+                    let Some(title) = args.get(3) else {
+                        eprintln!("Usage: cmdctl-cli knowledge add <title> <scope> [tags]");
+                        std::process::exit(1);
+                    };
                     let scope = args.get(4).map(|s| s.as_str()).unwrap_or("global");
                     let tags = args.get(5).map(|s| s.as_str()).unwrap_or("");
 
                     eprintln!("Enter content (Ctrl+D when done):");
                     let mut content = String::new();
                     use std::io::Read;
-                    std::io::stdin().read_to_string(&mut content).expect("Failed to read stdin");
+                    if let Err(e) = std::io::stdin().read_to_string(&mut content) {
+                        eprintln!("Failed to read stdin: {}", e);
+                        std::process::exit(1);
+                    }
 
                     match client.add_knowledge(title, content.trim(), scope, tags) {
                         Ok(id) => println!("Created knowledge entry: {}", id),
@@ -133,7 +148,10 @@ fn main() {
                     }
                 }
                 "remove" | "rm" => {
-                    let id = args.get(3).expect("Usage: cmdctl-cli knowledge remove <id>");
+                    let Some(id) = args.get(3) else {
+                        eprintln!("Usage: cmdctl-cli knowledge remove <id>");
+                        std::process::exit(1);
+                    };
                     match client.remove_knowledge(id) {
                         Ok(()) => println!("Removed knowledge entry: {}", id),
                         Err(e) => eprintln!("Error: {}", e),
