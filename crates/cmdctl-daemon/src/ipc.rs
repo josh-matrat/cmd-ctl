@@ -15,6 +15,9 @@ pub enum Request {
         /// For Claude sessions in a git repo, the branch/ref to base the worktree on.
         /// Defaults to HEAD if None.
         base_branch: Option<String>,
+        /// Launch Claude with --dangerously-skip-permissions.
+        #[serde(default)]
+        dangerously_skip_permissions: bool,
     },
     AttachSession(SessionId),
     DetachSession(SessionId),

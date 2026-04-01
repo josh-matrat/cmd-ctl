@@ -297,8 +297,8 @@ fn process_request(
         Request::ListSessions => {
             Response::SessionList(manager.lock().list_sessions())
         }
-        Request::CreateSession { name, agent_type, working_dir, base_branch } => {
-            match manager.lock().create_session(name, agent_type, working_dir, base_branch, 80, 24, 8, 17) {
+        Request::CreateSession { name, agent_type, working_dir, base_branch, dangerously_skip_permissions } => {
+            match manager.lock().create_session(name, agent_type, working_dir, base_branch, dangerously_skip_permissions, 80, 24, 8, 17) {
                 Ok(id) => Response::SessionCreated(id),
                 Err(e) => Response::Error(e.to_string()),
             }

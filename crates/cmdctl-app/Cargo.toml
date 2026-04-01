@@ -24,5 +24,7 @@ tracing-subscriber.workspace = true
 anyhow.workspace = true
 parking_lot.workspace = true
 crossbeam-channel.workspace = true
+serde.workspace = true
+toml.workspace = true
 dirs = "6"
 shellexpand = "3"

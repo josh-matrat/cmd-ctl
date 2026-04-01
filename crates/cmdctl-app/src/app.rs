@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use metal::*;
@@ -9,6 +10,9 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowAttributes, WindowId};
+
+/// Flag set by the native macOS "Settings…" menu item action.
+static MENU_SETTINGS_CLICKED: AtomicBool = AtomicBool::new(false);
 
 use cmdctl_daemon::client::DaemonClient;
 use cmdctl_daemon::ipc::{SessionEntry, TicketIpc};
@@ -53,6 +57,14 @@ enum Modal {
     RenameInput { session_index: usize, input: String, cursor_pos: usize },
     TicketTitleInput { ticket_key: String, input: String, cursor_pos: usize },
     TicketDetail { ticket: TicketIpc },
+    Settings {
+        rows: Vec<crate::settings::SettingsRow>,
+        selected: usize,
+        editing: bool,
+        edit_buffer: String,
+        edit_cursor: usize,
+        scroll_offset: usize,
+    },
 }
 
 struct QuickTerminal {
@@ -206,6 +218,19 @@ impl ApplicationHandler for CmdctlApp {
                 }
 
                 if mods.cmd {
+                    // Cmd+S in settings modal: save and close.
+                    if let Key::Character(c) = &event.logical_key {
+                        if c.as_str() == "s" {
+                            if let Some(Modal::Settings { rows, .. }) = &state.modal {
+                                if let Err(e) = crate::settings::save_rows(rows) {
+                                    tracing::error!("Failed to save settings: {}", e);
+                                }
+                                state.modal = None;
+                                return;
+                            }
+                        }
+                    }
+
                     // Cmd+Enter on a ticket: open a Claude session for this ticket.
                     if let Key::Named(NamedKey::Enter) = &event.logical_key {
                         // From the ticket detail modal
@@ -328,6 +353,22 @@ impl ApplicationHandler for CmdctlApp {
             }
 
             WindowEvent::RedrawRequested => {
+                // Check if the native "Settings…" menu item was clicked.
+                if MENU_SETTINGS_CLICKED.swap(false, Ordering::SeqCst) {
+                    if state.modal.is_none() {
+                        let rows = crate::settings::build_rows();
+                        let selected = crate::settings::first_field_index(&rows);
+                        state.modal = Some(Modal::Settings {
+                            rows,
+                            selected,
+                            editing: false,
+                            edit_buffer: String::new(),
+                            edit_cursor: 0,
+                            scroll_offset: 0,
+                        });
+                    }
+                }
+
                 // Refresh session list.
                 if let Ok(sessions) = state.client.list_sessions() {
                     state.sessions = sessions;
@@ -386,6 +427,212 @@ impl ApplicationHandler for CmdctlApp {
             }
             _ => {}
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Native macOS menu bar
+// ---------------------------------------------------------------------------
+
+/// Build the application's native macOS menu bar with a Settings item.
+///
+/// This replaces the default winit-generated menu with a proper application
+/// menu containing About, Settings… (⌘,), and Quit items.
+///
+/// The Settings item uses a custom Objective-C action handler that sets the
+/// `MENU_SETTINGS_CLICKED` flag. The event loop checks this flag on each
+/// redraw and opens the settings modal when it fires.
+fn build_native_menu() {
+    unsafe {
+        use objc2::msg_send;
+        use objc2::runtime::{AnyClass, AnyObject};
+
+        let ns_app: *mut AnyObject = msg_send![AnyClass::get(c"NSApplication").unwrap(), sharedApplication];
+
+        // Helper: create an NSString from a C string.
+        macro_rules! nsstr {
+            ($cstr:expr) => {{
+                let s: *mut AnyObject = msg_send![AnyClass::get(c"NSString").unwrap(), stringWithUTF8String: $cstr.as_ptr()];
+                s
+            }};
+        }
+
+        // -- Main menu bar --
+        let menu_bar: *mut AnyObject = msg_send![AnyClass::get(c"NSMenu").unwrap(), new];
+
+        // -- Application menu (first item = app name submenu) --
+        let app_menu_item: *mut AnyObject = msg_send![AnyClass::get(c"NSMenuItem").unwrap(), new];
+        let app_menu: *mut AnyObject = msg_send![AnyClass::get(c"NSMenu").unwrap(), new];
+
+        // "About CMD CTL"
+        let about_title = nsstr!(c"About CMD CTL");
+        let about_action = objc2::sel!(orderFrontStandardAboutPanel:);
+        let about_key = nsstr!(c"");
+        let about_item: *mut AnyObject = msg_send![
+            AnyClass::get(c"NSMenuItem").unwrap(),
+            alloc
+        ];
+        let about_item: *mut AnyObject = msg_send![
+            about_item,
+            initWithTitle: about_title,
+            action: about_action,
+            keyEquivalent: about_key
+        ];
+        let _: () = msg_send![app_menu, addItem: about_item];
+
+        // Separator
+        let sep: *mut AnyObject = msg_send![AnyClass::get(c"NSMenuItem").unwrap(), separatorItem];
+        let _: () = msg_send![app_menu, addItem: sep];
+
+        // "Settings…" (⌘,)
+        // We use a dummy action and instead rely on the Cmd+, keybinding.
+        // The menu item displays the shortcut but Cocoa will call performKeyEquivalent
+        // which we intercept.  To also handle clicks we register an ObjC block target.
+        let settings_title = nsstr!(c"Settings\xe2\x80\xa6");
+        let settings_key = nsstr!(c",");
+        let settings_item: *mut AnyObject = msg_send![
+            AnyClass::get(c"NSMenuItem").unwrap(),
+            alloc
+        ];
+        let settings_item: *mut AnyObject = msg_send![
+            settings_item,
+            initWithTitle: settings_title,
+            action: std::ptr::null::<std::ffi::c_void>(),
+            keyEquivalent: settings_key
+        ];
+
+        // Set key equivalent modifier mask to Cmd (NSEventModifierFlagCommand = 1 << 20).
+        let _: () = msg_send![settings_item, setKeyEquivalentModifierMask: (1u64 << 20)];
+
+        // Use a target/action pattern with NSApp. We'll register a tiny ObjC class
+        // whose settingsAction: method sets our static flag.
+        register_menu_handler(settings_item);
+
+        let _: () = msg_send![app_menu, addItem: settings_item];
+
+        // Separator
+        let sep2: *mut AnyObject = msg_send![AnyClass::get(c"NSMenuItem").unwrap(), separatorItem];
+        let _: () = msg_send![app_menu, addItem: sep2];
+
+        // "Quit CMD CTL" (⌘Q) — standard quit behavior
+        let quit_title = nsstr!(c"Quit CMD CTL");
+        let quit_action = objc2::sel!(terminate:);
+        let quit_key = nsstr!(c"q");
+        let quit_item: *mut AnyObject = msg_send![
+            AnyClass::get(c"NSMenuItem").unwrap(),
+            alloc
+        ];
+        let quit_item: *mut AnyObject = msg_send![
+            quit_item,
+            initWithTitle: quit_title,
+            action: quit_action,
+            keyEquivalent: quit_key
+        ];
+        let _: () = msg_send![app_menu, addItem: quit_item];
+
+        let _: () = msg_send![app_menu_item, setSubmenu: app_menu];
+        let _: () = msg_send![menu_bar, addItem: app_menu_item];
+
+        // -- Edit menu (needed for copy/paste in text fields) --
+        let edit_menu_item: *mut AnyObject = msg_send![AnyClass::get(c"NSMenuItem").unwrap(), new];
+        let edit_menu: *mut AnyObject = msg_send![
+            AnyClass::get(c"NSMenu").unwrap(),
+            alloc
+        ];
+        let edit_title = nsstr!(c"Edit");
+        let edit_menu: *mut AnyObject = msg_send![edit_menu, initWithTitle: edit_title];
+
+        let copy_title = nsstr!(c"Copy");
+        let copy_key = nsstr!(c"c");
+        let copy_item: *mut AnyObject = msg_send![AnyClass::get(c"NSMenuItem").unwrap(), alloc];
+        let copy_item: *mut AnyObject = msg_send![
+            copy_item,
+            initWithTitle: copy_title,
+            action: objc2::sel!(copy:),
+            keyEquivalent: copy_key
+        ];
+        let _: () = msg_send![edit_menu, addItem: copy_item];
+
+        let paste_title = nsstr!(c"Paste");
+        let paste_key = nsstr!(c"v");
+        let paste_item: *mut AnyObject = msg_send![AnyClass::get(c"NSMenuItem").unwrap(), alloc];
+        let paste_item: *mut AnyObject = msg_send![
+            paste_item,
+            initWithTitle: paste_title,
+            action: objc2::sel!(paste:),
+            keyEquivalent: paste_key
+        ];
+        let _: () = msg_send![edit_menu, addItem: paste_item];
+
+        let select_all_title = nsstr!(c"Select All");
+        let select_all_key = nsstr!(c"a");
+        let select_all_item: *mut AnyObject = msg_send![AnyClass::get(c"NSMenuItem").unwrap(), alloc];
+        let select_all_item: *mut AnyObject = msg_send![
+            select_all_item,
+            initWithTitle: select_all_title,
+            action: objc2::sel!(selectAll:),
+            keyEquivalent: select_all_key
+        ];
+        let _: () = msg_send![edit_menu, addItem: select_all_item];
+
+        let _: () = msg_send![edit_menu_item, setSubmenu: edit_menu];
+        let _: () = msg_send![menu_bar, addItem: edit_menu_item];
+
+        // Set as the app's main menu.
+        let _: () = msg_send![ns_app, setMainMenu: menu_bar];
+    }
+}
+
+/// Register a tiny Objective-C class with a `settingsAction:` method that sets
+/// the `MENU_SETTINGS_CLICKED` flag, and assign it as target of the given menu item.
+fn register_menu_handler(settings_item: *mut objc2::runtime::AnyObject) {
+    unsafe {
+        use objc2::msg_send;
+        use objc2::runtime::{AnyClass, AnyObject};
+
+        // Use the ObjC runtime C API to register the class dynamically.
+        extern "C" {
+            fn objc_allocateClassPair(
+                superclass: *const AnyClass,
+                name: *const std::ffi::c_char,
+                extra_bytes: usize,
+            ) -> *mut AnyClass;
+            fn class_addMethod(
+                cls: *mut AnyClass,
+                sel: objc2::runtime::Sel,
+                imp: extern "C" fn(*mut AnyObject, objc2::runtime::Sel),
+                types: *const std::ffi::c_char,
+            ) -> bool;
+            fn objc_registerClassPair(cls: *mut AnyClass);
+        }
+
+        // Check if class already exists (idempotent).
+        let class_name = c"CmdctlMenuHandler";
+        let existing = AnyClass::get(class_name);
+        let cls = if let Some(existing) = existing {
+            existing
+        } else {
+            let superclass = AnyClass::get(c"NSObject").unwrap();
+            let new_cls = objc_allocateClassPair(superclass, class_name.as_ptr(), 0);
+            assert!(!new_cls.is_null(), "Failed to allocate CmdctlMenuHandler class");
+
+            extern "C" fn settings_action(_this: *mut AnyObject, _sel: objc2::runtime::Sel) {
+                MENU_SETTINGS_CLICKED.store(true, Ordering::SeqCst);
+            }
+
+            let sel = objc2::sel!(settingsAction:);
+            let types = c"v@:";
+            class_addMethod(new_cls, sel, settings_action, types.as_ptr());
+            objc_registerClassPair(new_cls);
+
+            AnyClass::get(class_name).unwrap()
+        };
+
+        // Create an instance of the handler and set it as the menu item's target.
+        // The handler lives for the entire app lifetime (menu bar is never torn down).
+        let handler: *mut AnyObject = msg_send![cls, new];
+        let _: () = msg_send![settings_item, setTarget: handler];
+        let _: () = msg_send![settings_item, setAction: objc2::sel!(settingsAction:)];
     }
 }
 
@@ -465,6 +712,11 @@ fn init_window(event_loop: &ActiveEventLoop, font: &FontInfo) -> Result<AppState
 
             let _: () = msg_send![ns_view, setWantsLayer: true];
             let _: () = msg_send![ns_view, setLayer: layer_obj];
+
+            // ---------------------------------------------------------------
+            // Build native macOS menu bar
+            // ---------------------------------------------------------------
+            build_native_menu();
         }
     }
 
@@ -584,7 +836,9 @@ fn navigate_focus(state: &mut AppState, dir: Direction) {
 
 fn create_session(state: &mut AppState, name: &str, agent_type: &str, working_dir: Option<std::path::PathBuf>, base_branch: Option<&str>, font: &FontInfo) {
     let wd = working_dir.map(|p| p.to_string_lossy().to_string());
-    match state.client.create_session(name, agent_type, wd.as_deref(), base_branch) {
+    let skip_perms = agent_type == "claude"
+        && crate::settings::load_app_settings().general.claude_dangerously_skip_permissions;
+    match state.client.create_session(name, agent_type, wd.as_deref(), base_branch, skip_perms) {
         Ok(session_id) => {
             if let Some(slot) = state.first_empty_slot() {
                 // Auto-assign to the next free pane slot.
@@ -735,6 +989,18 @@ fn handle_global_command(cmd: &str, key: &str, state: &mut AppState, event_loop:
                 }
             }
         }
+        "settings.open" => {
+            let rows = crate::settings::build_rows();
+            let selected = crate::settings::first_field_index(&rows);
+            state.modal = Some(Modal::Settings {
+                rows,
+                selected,
+                editing: false,
+                edit_buffer: String::new(),
+                edit_cursor: 0,
+                scroll_offset: 0,
+            });
+        }
         "quick_terminal.toggle" => {
             if let Some(qt) = &mut state.quick_terminal {
                 qt.visible = !qt.visible;
@@ -745,7 +1011,7 @@ fn handle_global_command(cmd: &str, key: &str, state: &mut AppState, event_loop:
                 let home = dirs::home_dir()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| "~".to_string());
-                match state.client.create_session("Quick Terminal", "shell", Some(&home), None) {
+                match state.client.create_session("Quick Terminal", "shell", Some(&home), None, false) {
                     Ok(session_id) => {
                         state.quick_terminal = Some(QuickTerminal {
                             session_id,
@@ -876,7 +1142,8 @@ fn handle_sidebar_input(key: &Key, state: &mut AppState, font: &FontInfo) {
 
 /// Open a Claude session pre-loaded with ticket context.
 fn open_ticket_session(state: &mut AppState, name: &str, working_dir: &str, context_prompt: &str, font: &FontInfo) {
-    match state.client.create_session(name, "claude", Some(working_dir), None) {
+    let skip_perms = crate::settings::load_app_settings().general.claude_dangerously_skip_permissions;
+    match state.client.create_session(name, "claude", Some(working_dir), None, skip_perms) {
         Ok(session_id) => {
             // Send the ticket context as the first prompt to the Claude session.
             // Wait a moment for the session to initialize, then send context.
@@ -1114,6 +1381,108 @@ fn handle_modal_input(key: &Key, state: &mut AppState, font: &FontInfo) {
                 _ => {}
             }
         }
+        Modal::Settings { rows, selected, editing, edit_buffer, edit_cursor, scroll_offset } => {
+            if *editing {
+                // Inline field editing mode.
+                match key {
+                    Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Tab) => {
+                        // Commit edit to the row value.
+                        if let Some(crate::settings::SettingsRow::Field { value, .. }) = rows.get_mut(*selected) {
+                            *value = edit_buffer.clone();
+                        }
+                        *editing = false;
+                        edit_buffer.clear();
+                        *edit_cursor = 0;
+                        // Tab advances to next field.
+                        if matches!(key, Key::Named(NamedKey::Tab)) {
+                            let next = (*selected + 1..rows.len())
+                                .find(|&i| rows[i].is_field());
+                            if let Some(n) = next {
+                                *selected = n;
+                            }
+                        }
+                    }
+                    Key::Named(NamedKey::Escape) => {
+                        // Discard edit.
+                        *editing = false;
+                        edit_buffer.clear();
+                        *edit_cursor = 0;
+                    }
+                    Key::Named(NamedKey::Backspace) => {
+                        if *edit_cursor > 0 {
+                            edit_buffer.remove(*edit_cursor - 1);
+                            *edit_cursor -= 1;
+                        }
+                    }
+                    Key::Named(NamedKey::ArrowLeft) => {
+                        if *edit_cursor > 0 { *edit_cursor -= 1; }
+                    }
+                    Key::Named(NamedKey::ArrowRight) => {
+                        if *edit_cursor < edit_buffer.len() { *edit_cursor += 1; }
+                    }
+                    Key::Named(NamedKey::Home) => { *edit_cursor = 0; }
+                    Key::Named(NamedKey::End) => { *edit_cursor = edit_buffer.len(); }
+                    Key::Character(c) => {
+                        for ch in c.chars() {
+                            edit_buffer.insert(*edit_cursor, ch);
+                            *edit_cursor += 1;
+                        }
+                    }
+                    _ => {}
+                }
+            } else {
+                // Navigation mode.
+                match key {
+                    Key::Named(NamedKey::Escape) => { state.modal = None; }
+                    Key::Named(NamedKey::ArrowUp) => {
+                        let prev = (0..*selected).rev()
+                            .find(|&i| rows[i].is_field());
+                        if let Some(p) = prev {
+                            *selected = p;
+                            ensure_visible(rows, *selected, scroll_offset, 30);
+                        }
+                    }
+                    Key::Named(NamedKey::ArrowDown) => {
+                        let next = (*selected + 1..rows.len())
+                            .find(|&i| rows[i].is_field());
+                        if let Some(n) = next {
+                            *selected = n;
+                            ensure_visible(rows, *selected, scroll_offset, 30);
+                        }
+                    }
+                    Key::Named(NamedKey::Enter) => {
+                        if let Some(crate::settings::SettingsRow::Field { value, .. }) = rows.get(*selected) {
+                            *edit_buffer = value.clone();
+                            *edit_cursor = edit_buffer.len();
+                            *editing = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+/// Adjust scroll_offset so that the selected settings row stays visible.
+fn ensure_visible(
+    rows: &[crate::settings::SettingsRow],
+    selected: usize,
+    scroll_offset: &mut usize,
+    visible_rows: usize,
+) {
+    let mut display_row = 0usize;
+    for (i, row) in rows.iter().enumerate().skip(*scroll_offset) {
+        if i == selected { break; }
+        match row {
+            crate::settings::SettingsRow::Section(_) => display_row += 2,
+            crate::settings::SettingsRow::Field { .. } => display_row += 1,
+        }
+    }
+    if selected < *scroll_offset {
+        *scroll_offset = selected.saturating_sub(1);
+    } else if display_row >= visible_rows {
+        *scroll_offset += display_row - visible_rows + 1;
     }
 }
 
@@ -1425,6 +1794,27 @@ fn render_frame(state: &mut AppState, font: &FontInfo) {
                     labels: ticket.labels.clone(),
                 };
                 ui_renderer::build_ticket_detail(main_cols, rows, &detail,
+                    &mut state.renderer.atlas, font, sf)
+            }
+            Modal::Settings { rows: setting_rows, selected, editing, edit_buffer, edit_cursor, scroll_offset } => {
+                let display_rows: Vec<ui_renderer::SettingsDisplayRow> = setting_rows.iter().enumerate().map(|(i, r)| {
+                    match r {
+                        crate::settings::SettingsRow::Section(name) => {
+                            ui_renderer::SettingsDisplayRow::Section(name.clone())
+                        }
+                        crate::settings::SettingsRow::Field { label, value, secret, .. } => {
+                            ui_renderer::SettingsDisplayRow::Field {
+                                label: label.to_string(),
+                                display_value: value.clone(),
+                                is_selected: i == *selected,
+                                is_editing: i == *selected && *editing,
+                                is_secret: *secret,
+                            }
+                        }
+                    }
+                }).collect();
+                ui_renderer::build_settings(main_cols, rows, &display_rows,
+                    edit_buffer, *edit_cursor, *scroll_offset,
                     &mut state.renderer.atlas, font, sf)
             }
         };

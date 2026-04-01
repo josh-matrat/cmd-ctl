@@ -22,5 +22,6 @@ pub fn default_commands() -> Vec<CommandInfo> {
         CommandInfo { id: "search.open", name: "Search", description: "Search across session output" },
         CommandInfo { id: "tickets.refresh", name: "Refresh Tickets", description: "Refresh tickets from all providers" },
         CommandInfo { id: "tickets.focus", name: "Focus Tickets", description: "Switch sidebar to tickets section" },
+        CommandInfo { id: "settings.open", name: "Settings", description: "Open application settings (Cmd-,)" },
     ]
 }

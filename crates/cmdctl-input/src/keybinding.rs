@@ -35,6 +35,10 @@ impl KeybindingManager {
         let mut bindings = HashMap::new();
 
         bindings.insert(
+            KeyBinding { modifiers: Modifiers::CMD, key: ",".into() },
+            "settings.open",
+        );
+        bindings.insert(
             KeyBinding { modifiers: Modifiers::CMD, key: "t".into() },
             "quick_terminal.toggle",
         );

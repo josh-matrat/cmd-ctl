@@ -60,6 +60,7 @@ impl SessionManager {
         agent_type: String,
         working_dir: Option<String>,
         base_branch: Option<String>,
+        dangerously_skip_permissions: bool,
         cols: u16,
         rows: u16,
         cell_width: u16,
@@ -119,7 +120,11 @@ impl SessionManager {
 
         // If Claude Code session, launch claude.
         if agent_type == "claude" {
-            session.write(b"claude\r");
+            if dangerously_skip_permissions {
+                session.write(b"claude --dangerously-skip-permissions\r");
+            } else {
+                session.write(b"claude\r");
+            }
         }
 
         let entry = SessionEntry {

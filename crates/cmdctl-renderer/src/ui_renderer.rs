@@ -262,6 +262,7 @@ pub fn build_sidebar(
     lines.push(sb("  \u{2318}\u{21a9}  Work ticket").fg(colors::ANSI[8]));
     lines.push(sb("  \u{2318}1-4 Focus pane").fg(colors::ANSI[8]));
     lines.push(sb("  \u{2318}\u{2190}\u{2192} Move focus").fg(colors::ANSI[8]));
+    lines.push(sb("  \u{2318},  Settings").fg(colors::ANSI[8]));
 
     render_lines(&lines, cols, rows, bg, &mut cells, atlas, font, scale);
     cells
@@ -678,6 +679,155 @@ pub fn build_branch_input(
                 let cell_idx = input_row * cols + col;
                 if cell_idx < cells.len() {
                     cells[cell_idx] = (col, input_row, ' ', input_fg, colors::CURSOR, true);
+                }
+            }
+        }
+    }
+
+    cells
+}
+
+// ---------------------------------------------------------------------------
+// Modal: settings page
+// ---------------------------------------------------------------------------
+
+/// Display data for a single row in the settings list.
+pub enum SettingsDisplayRow {
+    Section(String),
+    Field {
+        label: String,
+        display_value: String,
+        is_selected: bool,
+        is_editing: bool,
+        is_secret: bool,
+    },
+}
+
+/// Build cell data for the settings page.
+pub fn build_settings(
+    cols: usize,
+    rows: usize,
+    items: &[SettingsDisplayRow],
+    edit_buffer: &str,
+    edit_cursor: usize,
+    scroll_offset: usize,
+    atlas: &mut GlyphAtlas,
+    font: &FontInfo,
+    scale: f64,
+) -> Vec<(usize, usize, char, [f32; 4], [f32; 4], bool)> {
+    let mut cells = Vec::new();
+
+    for row in 0..rows {
+        for col in 0..cols {
+            cells.push((col, row, ' ', colors::FG, colors::BG, false));
+        }
+    }
+
+    let mut lines: Vec<StyledLine> = Vec::new();
+
+    lines.push(StyledLine::new(""));
+    lines.push(StyledLine::new("C M D C T L").fg(colors::ANSI[3]).centered());
+    lines.push(StyledLine::new(""));
+    lines.push(StyledLine::new("  SETTINGS").fg(colors::ANSI[7]));
+    lines.push(StyledLine::new(""));
+
+    let header_rows = lines.len();
+    let footer_rows = 5;
+    let max_visible = rows.saturating_sub(header_rows + footer_rows);
+
+    let mut editing_line_idx: Option<usize> = None;
+    let label_width = 18;
+
+    for item in items.iter().skip(scroll_offset).take(max_visible) {
+        match item {
+            SettingsDisplayRow::Section(name) => {
+                lines.push(StyledLine::new(""));
+                lines.push(StyledLine::new(&format!("  {}", name)).fg(colors::ANSI[3]));
+            }
+            SettingsDisplayRow::Field { label, display_value, is_selected, is_editing, is_secret } => {
+                let padded_label = format!("{:width$}", label, width = label_width);
+                let shown_value = if *is_editing {
+                    String::new()
+                } else if *is_secret && !display_value.is_empty() {
+                    "\u{2022}".repeat(display_value.len().min(20))
+                } else if display_value.is_empty() {
+                    "(not set)".to_string()
+                } else {
+                    display_value.clone()
+                };
+
+                let line_text = format!("  {}  {}", padded_label, shown_value);
+
+                let fg = if *is_selected {
+                    colors::ANSI[15]
+                } else if display_value.is_empty() && !*is_editing {
+                    colors::ANSI[10]
+                } else {
+                    colors::FG
+                };
+                let bg = if *is_selected {
+                    [0.12, 0.06, 0.04, 0.95]
+                } else {
+                    colors::BG
+                };
+
+                if *is_editing {
+                    editing_line_idx = Some(lines.len());
+                    lines.push(StyledLine::new(&format!("  {}  ", padded_label)).fg(fg).bg(bg));
+                } else {
+                    lines.push(StyledLine::new(&line_text).fg(fg).bg(bg));
+                }
+            }
+        }
+    }
+
+    // Footer hints — push to bottom
+    let footer_start = rows.saturating_sub(footer_rows);
+    while lines.len() < footer_start {
+        lines.push(StyledLine::new(""));
+    }
+    lines.push(StyledLine::new(""));
+    lines.push(StyledLine::new("  \u{2191}\u{2193}       Navigate").fg(colors::ANSI[10]));
+    lines.push(StyledLine::new("  Enter    Edit / Confirm").fg(colors::ANSI[10]));
+    lines.push(StyledLine::new("  \u{2318}S       Save & close").fg(colors::ANSI[10]));
+    lines.push(StyledLine::new("  Escape   Cancel").fg(colors::ANSI[10]));
+
+    render_lines(&lines, cols, rows, colors::BG, &mut cells, atlas, font, scale);
+
+    // Draw the editing field value with cursor support.
+    if let Some(line_idx) = editing_line_idx {
+        if line_idx < rows {
+            let prompt_offset = 2 + label_width + 2;
+            let input_chars: Vec<char> = edit_buffer.chars().collect();
+            let input_fg = colors::ANSI[15];
+            let input_bg = [0.12, 0.06, 0.04, 0.95];
+
+            for col in 0..cols {
+                let idx = line_idx * cols + col;
+                if idx < cells.len() {
+                    cells[idx].4 = input_bg;
+                }
+            }
+
+            for (i, &ch) in input_chars.iter().enumerate() {
+                let col = prompt_offset + i;
+                if col >= cols { break; }
+                let is_cursor = i == edit_cursor;
+                let bg = if is_cursor { colors::CURSOR } else { input_bg };
+                if ch > ' ' { atlas.get_or_insert(ch, font, scale); }
+                let idx = line_idx * cols + col;
+                if idx < cells.len() {
+                    cells[idx] = (col, line_idx, ch, input_fg, bg, is_cursor);
+                }
+            }
+
+            if edit_cursor >= input_chars.len() {
+                let col = prompt_offset + edit_cursor;
+                if col < cols {
+                    let idx = line_idx * cols + col;
+                    if idx < cells.len() {
+                        cells[idx] = (col, line_idx, ' ', input_fg, colors::CURSOR, true);
+                    }
                 }
             }
         }

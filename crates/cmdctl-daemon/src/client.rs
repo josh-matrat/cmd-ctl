@@ -33,12 +33,13 @@ impl DaemonClient {
         }
     }
 
-    pub fn create_session(&mut self, name: &str, agent_type: &str, working_dir: Option<&str>, base_branch: Option<&str>) -> Result<SessionId> {
+    pub fn create_session(&mut self, name: &str, agent_type: &str, working_dir: Option<&str>, base_branch: Option<&str>, dangerously_skip_permissions: bool) -> Result<SessionId> {
         match self.request(Request::CreateSession {
             name: name.to_string(),
             agent_type: agent_type.to_string(),
             working_dir: working_dir.map(|s| s.to_string()),
             base_branch: base_branch.map(|s| s.to_string()),
+            dangerously_skip_permissions,
         })? {
             Response::SessionCreated(id) => Ok(id),
             Response::Error(e) => anyhow::bail!("{}", e),
