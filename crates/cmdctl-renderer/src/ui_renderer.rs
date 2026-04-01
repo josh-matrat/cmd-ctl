@@ -251,13 +251,15 @@ pub fn build_sidebar(
     // -- Actions --
     lines.push(sb(""));
     lines.push(sb(" ACTIONS (\u{2318} + key)").fg(colors::ANSI[10]));
+    lines.push(sb("  \u{2318}t Quick Term").fg(colors::ANSI[6]));
     lines.push(sb("  \u{2318}n Shell").fg(colors::ANSI[3]));
     lines.push(sb("  \u{2318}c Claude").fg(colors::ANSI[3]));
     lines.push(sb("  \u{2318}r Rename").fg(colors::ANSI[6]));
     lines.push(sb(""));
     lines.push(sb("  \u{2191}\u{2193}  Navigate").fg(colors::ANSI[8]));
     lines.push(sb("  Tab  Switch section").fg(colors::ANSI[8]));
-    lines.push(sb("  Enter  Open/Work ticket").fg(colors::ANSI[8]));
+    lines.push(sb("  Enter  View details").fg(colors::ANSI[8]));
+    lines.push(sb("  \u{2318}\u{21a9}  Work ticket").fg(colors::ANSI[8]));
     lines.push(sb("  \u{2318}1-4 Focus pane").fg(colors::ANSI[8]));
     lines.push(sb("  \u{2318}\u{2190}\u{2192} Move focus").fg(colors::ANSI[8]));
 
@@ -596,5 +598,153 @@ pub fn build_branch_input(
         }
     }
 
+    cells
+}
+
+// ---------------------------------------------------------------------------
+// Modal: ticket detail popup
+// ---------------------------------------------------------------------------
+
+/// Word-wrap a string to fit within `max_cols`, returning a Vec of lines.
+fn wrap_text(text: &str, max_cols: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for paragraph in text.split('\n') {
+        if paragraph.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        let mut current_line = String::new();
+        for word in paragraph.split_whitespace() {
+            if current_line.is_empty() {
+                current_line = word.to_string();
+            } else if current_line.len() + 1 + word.len() <= max_cols {
+                current_line.push(' ');
+                current_line.push_str(word);
+            } else {
+                lines.push(current_line);
+                current_line = word.to_string();
+            }
+        }
+        if !current_line.is_empty() {
+            lines.push(current_line);
+        }
+    }
+    lines
+}
+
+/// Full ticket info for the detail popup.
+#[derive(Clone)]
+pub struct TicketDetailInfo {
+    pub key: String,
+    pub title: String,
+    pub description: String,
+    pub status: String,
+    pub status_icon: String,
+    pub priority: String,
+    pub priority_icon: String,
+    pub provider: String,
+    pub url: String,
+    pub assignee: Option<String>,
+    pub labels: Vec<String>,
+}
+
+/// Build cell data for the ticket detail popup.
+pub fn build_ticket_detail(
+    cols: usize,
+    rows: usize,
+    ticket: &TicketDetailInfo,
+    atlas: &mut GlyphAtlas,
+    font: &FontInfo,
+    scale: f64,
+) -> Vec<(usize, usize, char, [f32; 4], [f32; 4], bool)> {
+    let mut cells = Vec::new();
+
+    for row in 0..rows {
+        for col in 0..cols {
+            cells.push((col, row, ' ', colors::FG, colors::BG, false));
+        }
+    }
+
+    let mut lines: Vec<StyledLine> = Vec::new();
+
+    lines.push(StyledLine::new(""));
+    lines.push(StyledLine::new("C M D C T L")
+        .fg(colors::ANSI[3])
+        .centered());
+    lines.push(StyledLine::new(""));
+
+    // Ticket key + status/priority icons
+    let header = format!("  {} {} {}", ticket.status_icon, ticket.priority_icon, ticket.key);
+    lines.push(StyledLine::new(&header).fg(colors::ANSI[3]));
+    lines.push(StyledLine::new(""));
+
+    // Title (wrapped)
+    let indent = 2;
+    let wrap_width = cols.saturating_sub(indent + 2);
+    let title_lines = wrap_text(&ticket.title, wrap_width);
+    for tl in &title_lines {
+        lines.push(StyledLine::new(&format!("  {}", tl)).fg(colors::ANSI[15]));
+    }
+    lines.push(StyledLine::new(""));
+
+    // Metadata fields
+    let status_fg = match ticket.status_icon.as_str() {
+        "!" => colors::ANSI[1],  // blocked = red
+        "*" => colors::ANSI[3],  // in progress = yellow
+        "~" => colors::ANSI[6],  // in review = cyan
+        "x" => colors::ANSI[10], // done = dim
+        _ => colors::FG,
+    };
+    lines.push(StyledLine::new(&format!("  Status:    {}", ticket.status)).fg(status_fg));
+
+    let priority_fg = match ticket.priority_icon.as_str() {
+        "!!" => colors::ANSI[1],
+        "!" => colors::ANSI[3],
+        _ => colors::FG,
+    };
+    lines.push(StyledLine::new(&format!("  Priority:  {}", ticket.priority)).fg(priority_fg));
+    lines.push(StyledLine::new(&format!("  Provider:  {}", ticket.provider)).fg(colors::ANSI[7]));
+
+    if let Some(assignee) = &ticket.assignee {
+        lines.push(StyledLine::new(&format!("  Assignee:  {}", assignee)).fg(colors::ANSI[7]));
+    }
+
+    if !ticket.labels.is_empty() {
+        let label_str = ticket.labels.join(", ");
+        lines.push(StyledLine::new(&format!("  Labels:    {}", label_str)).fg(colors::ANSI[6]));
+    }
+
+    if !ticket.url.is_empty() {
+        let url_display: String = ticket.url.chars().take(wrap_width).collect();
+        lines.push(StyledLine::new(&format!("  URL:       {}", url_display)).fg(colors::ANSI[4]));
+    }
+
+    lines.push(StyledLine::new(""));
+
+    // Description (wrapped)
+    if !ticket.description.is_empty() {
+        lines.push(StyledLine::new("  Description:").fg(colors::ANSI[7]));
+        lines.push(StyledLine::new(""));
+        let desc_lines = wrap_text(&ticket.description, wrap_width);
+        let max_desc = rows.saturating_sub(lines.len() + 6); // leave room for footer
+        for dl in desc_lines.iter().take(max_desc) {
+            lines.push(StyledLine::new(&format!("  {}", dl)).fg(colors::FG));
+        }
+        if desc_lines.len() > max_desc {
+            lines.push(StyledLine::new(&format!("  ... ({} more lines)", desc_lines.len() - max_desc))
+                .fg(colors::ANSI[10]));
+        }
+    }
+
+    // Footer hints — push to bottom area
+    let footer_start = rows.saturating_sub(4);
+    while lines.len() < footer_start {
+        lines.push(StyledLine::new(""));
+    }
+    lines.push(StyledLine::new(""));
+    lines.push(StyledLine::new("  Escape/Enter   Close").fg(colors::ANSI[10]));
+    lines.push(StyledLine::new("  \u{2318}\u{21a9}           Work on ticket").fg(colors::ANSI[10]));
+
+    render_lines(&lines, cols, rows, colors::BG, &mut cells, atlas, font, scale);
     cells
 }

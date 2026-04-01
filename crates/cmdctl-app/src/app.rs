@@ -51,6 +51,12 @@ enum Modal {
         selected: usize,
     },
     RenameInput { session_index: usize, input: String, cursor_pos: usize },
+    TicketDetail { ticket: TicketIpc },
+}
+
+struct QuickTerminal {
+    session_id: String,
+    visible: bool,
 }
 
 enum Direction { Up, Down, Left, Right }
@@ -91,6 +97,7 @@ struct AppState {
     panes: [Option<String>; 4], // fixed 2x2 grid of pane slots
     sidebar_selected: usize,
     modal: Option<Modal>,
+    quick_terminal: Option<QuickTerminal>,
     // Grid dimensions (full window in cells)
     cols: u16,
     rows: u16,
@@ -187,6 +194,40 @@ impl ApplicationHandler for CmdctlApp {
                 }
 
                 if mods.cmd {
+                    // Cmd+Enter on a ticket: open a Claude session for this ticket.
+                    if let Key::Named(NamedKey::Enter) = &event.logical_key {
+                        // From the ticket detail modal
+                        let ticket_from_modal = if let Some(Modal::TicketDetail { ticket }) = &state.modal {
+                            Some(ticket.clone())
+                        } else {
+                            None
+                        };
+                        if let Some(ticket) = ticket_from_modal {
+                            state.modal = None;
+                            let default_dir = dirs::home_dir()
+                                .map(|p| p.to_string_lossy().to_string())
+                                .unwrap_or_else(|| "~".to_string());
+                            let name = format!("Ticket {} \u{2014} {}", ticket.key,
+                                ticket.title.chars().take(30).collect::<String>());
+                            open_ticket_session(state, &name, &default_dir, &ticket.context_prompt, &self.font);
+                            return;
+                        }
+                        // From the sidebar tickets section
+                        if state.focus == Focus::Sidebar
+                            && state.sidebar_section == SidebarSection::Tickets
+                            && state.ticket_selected < state.tickets.len()
+                        {
+                            let ticket = state.tickets[state.ticket_selected].clone();
+                            let default_dir = dirs::home_dir()
+                                .map(|p| p.to_string_lossy().to_string())
+                                .unwrap_or_else(|| "~".to_string());
+                            let name = format!("Ticket {} \u{2014} {}", ticket.key,
+                                ticket.title.chars().take(30).collect::<String>());
+                            open_ticket_session(state, &name, &default_dir, &ticket.context_prompt, &self.font);
+                            return;
+                        }
+                    }
+
                     // Cmd+Arrow: pane/focus navigation.
                     match &event.logical_key {
                         Key::Named(NamedKey::ArrowRight) => { navigate_focus(state, Direction::Right); return; }
@@ -433,6 +474,7 @@ fn init_window(event_loop: &ActiveEventLoop, font: &FontInfo) -> Result<AppState
         panes: [None, None, None, None],
         sidebar_selected: 0,
         modal: None,
+        quick_terminal: None,
         cols, rows, scale_factor,
         cursor_position: (0.0, 0.0),
     })
@@ -555,6 +597,29 @@ fn resize_pane_sessions(state: &mut AppState, font: &FontInfo) {
             let _ = state.client.resize_session(
                 session_id,
                 rect.cols as u16, rect.rows as u16,
+                font.cell_width.ceil() as u16, font.cell_height.ceil() as u16,
+            );
+        }
+    }
+}
+
+fn quick_terminal_rect(cols: usize, rows: usize) -> PaneRect {
+    let overlay_cols = (cols * 80 / 100).max(40).min(cols.saturating_sub(4));
+    let overlay_rows = (rows * 70 / 100).max(15).min(rows.saturating_sub(4));
+    let start_col = cols.saturating_sub(overlay_cols) / 2;
+    let start_row = rows.saturating_sub(overlay_rows) / 2;
+    PaneRect { col: start_col, row: start_row, cols: overlay_cols, rows: overlay_rows }
+}
+
+fn resize_quick_terminal(state: &mut AppState, font: &FontInfo) {
+    if let Some(qt) = &state.quick_terminal {
+        if qt.visible {
+            let rect = quick_terminal_rect(state.cols as usize, state.rows as usize);
+            let inner_cols = rect.cols.saturating_sub(2);
+            let inner_rows = rect.rows.saturating_sub(2);
+            let _ = state.client.resize_session(
+                &qt.session_id,
+                inner_cols as u16, inner_rows as u16,
                 font.cell_width.ceil() as u16, font.cell_height.ceil() as u16,
             );
         }
@@ -706,16 +771,10 @@ fn handle_sidebar_input(key: &Key, state: &mut AppState, font: &FontInfo) {
                     }
                 }
                 SidebarSection::Tickets => {
-                    // Enter on a ticket: spawn a Claude session with the ticket context.
+                    // Enter on a ticket: show ticket detail popup.
                     if state.ticket_selected < state.tickets.len() {
                         let ticket = state.tickets[state.ticket_selected].clone();
-                        let default_dir = dirs::home_dir()
-                            .map(|p| p.to_string_lossy().to_string())
-                            .unwrap_or_else(|| "~".to_string());
-                        let name = format!("Ticket {} \u{2014} {}", ticket.key,
-                            ticket.title.chars().take(30).collect::<String>());
-                        // Create a Claude session with the ticket context pre-loaded.
-                        open_ticket_session(state, &name, &default_dir, &ticket.context_prompt, font);
+                        state.modal = Some(Modal::TicketDetail { ticket });
                     }
                 }
             }
@@ -954,6 +1013,14 @@ fn handle_modal_input(key: &Key, state: &mut AppState, font: &FontInfo) {
                 Key::Named(NamedKey::ArrowRight) => { if *cursor_pos < input.len() { *cursor_pos += 1; } }
                 Key::Character(c) => {
                     for ch in c.chars() { input.insert(*cursor_pos, ch); *cursor_pos += 1; }
+                }
+                _ => {}
+            }
+        }
+        Modal::TicketDetail { .. } => {
+            match key {
+                Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter) => {
+                    state.modal = None;
                 }
                 _ => {}
             }
@@ -1242,6 +1309,23 @@ fn render_frame(state: &mut AppState, font: &FontInfo) {
             }
             Modal::RenameInput { input, cursor_pos, .. } => {
                 ui_renderer::build_rename_input(main_cols, rows, "", input, *cursor_pos,
+                    &mut state.renderer.atlas, font, sf)
+            }
+            Modal::TicketDetail { ticket } => {
+                let detail = ui_renderer::TicketDetailInfo {
+                    key: ticket.key.clone(),
+                    title: ticket.title.clone(),
+                    description: ticket.description.clone(),
+                    status: ticket.status.clone(),
+                    status_icon: ticket.status_icon.clone(),
+                    priority: ticket.priority.clone(),
+                    priority_icon: ticket.priority_icon.clone(),
+                    provider: ticket.provider.clone(),
+                    url: ticket.url.clone(),
+                    assignee: ticket.assignee.clone(),
+                    labels: ticket.labels.clone(),
+                };
+                ui_renderer::build_ticket_detail(main_cols, rows, &detail,
                     &mut state.renderer.atlas, font, sf)
             }
         };

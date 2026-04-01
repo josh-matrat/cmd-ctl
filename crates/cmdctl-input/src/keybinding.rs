@@ -36,6 +36,10 @@ impl KeybindingManager {
 
         bindings.insert(
             KeyBinding { modifiers: Modifiers::CMD, key: "t".into() },
+            "quick_terminal.toggle",
+        );
+        bindings.insert(
+            KeyBinding { modifiers: Modifiers::CMD, key: "n".into() },
             "session.create.shell",
         );
         bindings.insert(
