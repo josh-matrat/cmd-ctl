@@ -51,6 +51,7 @@ enum Modal {
         selected: usize,
     },
     RenameInput { session_index: usize, input: String, cursor_pos: usize },
+    TicketTitleInput { ticket_key: String, input: String, cursor_pos: usize },
     TicketDetail { ticket: TicketIpc },
 }
 
@@ -842,13 +843,28 @@ fn handle_sidebar_input(key: &Key, state: &mut AppState, font: &FontInfo) {
                     });
                 }
                 "r" | "R" => {
-                    if state.sidebar_selected < state.sessions.len() {
-                        let name = state.sessions[state.sidebar_selected].name.clone();
-                        state.modal = Some(Modal::RenameInput {
-                            session_index: state.sidebar_selected,
-                            input: name.clone(),
-                            cursor_pos: name.len(),
-                        });
+                    match state.sidebar_section {
+                        SidebarSection::Sessions => {
+                            if state.sidebar_selected < state.sessions.len() {
+                                let name = state.sessions[state.sidebar_selected].name.clone();
+                                state.modal = Some(Modal::RenameInput {
+                                    session_index: state.sidebar_selected,
+                                    input: name.clone(),
+                                    cursor_pos: name.len(),
+                                });
+                            }
+                        }
+                        SidebarSection::Tickets => {
+                            if state.ticket_selected < state.tickets.len() {
+                                let ticket = &state.tickets[state.ticket_selected];
+                                let title = ticket.title.clone();
+                                state.modal = Some(Modal::TicketTitleInput {
+                                    ticket_key: ticket.key.clone(),
+                                    input: title.clone(),
+                                    cursor_pos: title.len(),
+                                });
+                            }
+                        }
                     }
                 }
                 _ => {}
@@ -1057,10 +1073,43 @@ fn handle_modal_input(key: &Key, state: &mut AppState, font: &FontInfo) {
                 _ => {}
             }
         }
-        Modal::TicketDetail { .. } => {
+        Modal::TicketTitleInput { ticket_key, input, cursor_pos } => {
+            match key {
+                Key::Named(NamedKey::Enter) => {
+                    if !input.is_empty() {
+                        let _ = state.client.update_ticket_title(ticket_key, input);
+                        // Update the local cached ticket immediately.
+                        if let Some(t) = state.tickets.iter_mut().find(|t| t.key == *ticket_key) {
+                            t.title = input.clone();
+                        }
+                    }
+                    state.modal = None;
+                }
+                Key::Named(NamedKey::Escape) => { state.modal = None; }
+                Key::Named(NamedKey::Backspace) => {
+                    if *cursor_pos > 0 { input.remove(*cursor_pos - 1); *cursor_pos -= 1; }
+                }
+                Key::Named(NamedKey::ArrowLeft) => { if *cursor_pos > 0 { *cursor_pos -= 1; } }
+                Key::Named(NamedKey::ArrowRight) => { if *cursor_pos < input.len() { *cursor_pos += 1; } }
+                Key::Character(c) => {
+                    for ch in c.chars() { input.insert(*cursor_pos, ch); *cursor_pos += 1; }
+                }
+                _ => {}
+            }
+        }
+        Modal::TicketDetail { ticket } => {
             match key {
                 Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter) => {
                     state.modal = None;
+                }
+                Key::Character(c) if c == "r" || c == "R" => {
+                    let title = ticket.title.clone();
+                    let key = ticket.key.clone();
+                    state.modal = Some(Modal::TicketTitleInput {
+                        ticket_key: key,
+                        input: title.clone(),
+                        cursor_pos: title.len(),
+                    });
                 }
                 _ => {}
             }
@@ -1355,6 +1404,10 @@ fn render_frame(state: &mut AppState, font: &FontInfo) {
             }
             Modal::RenameInput { input, cursor_pos, .. } => {
                 ui_renderer::build_rename_input(main_cols, rows, "", input, *cursor_pos,
+                    &mut state.renderer.atlas, font, sf)
+            }
+            Modal::TicketTitleInput { input, cursor_pos, .. } => {
+                ui_renderer::build_ticket_title_input(main_cols, rows, input, *cursor_pos,
                     &mut state.renderer.atlas, font, sf)
             }
             Modal::TicketDetail { ticket } => {

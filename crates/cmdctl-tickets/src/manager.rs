@@ -1,6 +1,6 @@
 //! Ticket manager — owns providers, handles caching and refresh.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use tracing;
@@ -18,6 +18,8 @@ pub struct TicketManager {
     providers: Vec<Box<dyn TicketProvider>>,
     cached_tickets: Vec<Ticket>,
     last_refresh: Option<Instant>,
+    /// User-set title overrides keyed by ticket key. Applied after each refresh.
+    title_overrides: HashMap<String, String>,
 }
 
 impl TicketManager {
@@ -53,6 +55,7 @@ impl TicketManager {
             providers,
             cached_tickets: Vec::new(),
             last_refresh: None,
+            title_overrides: HashMap::new(),
         }
     }
 
@@ -118,7 +121,25 @@ impl TicketManager {
         });
 
         self.cached_tickets = all_tickets;
+        self.apply_title_overrides();
         self.last_refresh = Some(Instant::now());
+    }
+
+    /// Set a local title override for a ticket. Applied immediately and survives refreshes.
+    pub fn update_title(&mut self, key: &str, title: String) {
+        self.title_overrides.insert(key.to_string(), title.clone());
+        if let Some(ticket) = self.cached_tickets.iter_mut().find(|t| t.key == key) {
+            ticket.title = title;
+        }
+    }
+
+    /// Apply stored title overrides to the cached tickets.
+    fn apply_title_overrides(&mut self) {
+        for ticket in &mut self.cached_tickets {
+            if let Some(title) = self.title_overrides.get(&ticket.key) {
+                ticket.title = title.clone();
+            }
+        }
     }
 
     /// Get a ticket by key.

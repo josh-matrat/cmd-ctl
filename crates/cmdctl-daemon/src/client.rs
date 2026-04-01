@@ -126,6 +126,17 @@ impl DaemonClient {
         }
     }
 
+    pub fn update_ticket_title(&mut self, key: &str, title: &str) -> Result<()> {
+        match self.request(Request::UpdateTicketTitle {
+            key: key.to_string(),
+            title: title.to_string(),
+        })? {
+            Response::Ok => Ok(()),
+            Response::Error(e) => anyhow::bail!("{}", e),
+            _ => anyhow::bail!("Unexpected response"),
+        }
+    }
+
     // -- Knowledge operations --
 
     pub fn add_knowledge(&mut self, title: &str, content: &str, scope: &str, tags: &str) -> Result<String> {
