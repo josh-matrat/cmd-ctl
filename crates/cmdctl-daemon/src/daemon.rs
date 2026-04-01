@@ -42,7 +42,7 @@ impl DaemonHandle {
 /// Get the base directory (~/.cmdctl/).
 pub fn base_dir() -> PathBuf {
     dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .expect("HOME directory not set — cannot determine config path")
         .join(".cmdctl")
 }
 

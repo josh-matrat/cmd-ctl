@@ -61,7 +61,7 @@ pub struct ProvidersConfig {
     pub imperrium: Option<ImperriumConfig>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 pub struct JiraConfig {
     #[serde(default)]
     pub url: String,
@@ -75,7 +75,17 @@ pub struct JiraConfig {
     pub max_results: Option<u32>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+impl std::fmt::Debug for JiraConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JiraConfig")
+            .field("url", &self.url)
+            .field("email", &self.email)
+            .field("api_token", &"***")
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Default, Clone, Serialize, Deserialize)]
 pub struct NotionConfig {
     #[serde(default)]
     pub api_token: String,
@@ -85,7 +95,16 @@ pub struct NotionConfig {
     pub user_email: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+impl std::fmt::Debug for NotionConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NotionConfig")
+            .field("api_token", &"***")
+            .field("database_id", &self.database_id)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Default, Clone, Serialize, Deserialize)]
 pub struct ImperriumConfig {
     #[serde(default)]
     pub url: String,
@@ -97,13 +116,23 @@ pub struct ImperriumConfig {
     pub user: Option<String>,
 }
 
+impl std::fmt::Debug for ImperriumConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImperriumConfig")
+            .field("url", &self.url)
+            .field("api_token", &"***")
+            .field("project", &self.project)
+            .finish_non_exhaustive()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // File paths
 // ---------------------------------------------------------------------------
 
 fn base_dir() -> PathBuf {
     dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .expect("HOME directory not set — cannot determine config path")
         .join(".cmdctl")
 }
 
@@ -136,8 +165,18 @@ fn save_app_settings(settings: &AppSettings) -> Result<()> {
     let path = settings_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+        }
     }
     std::fs::write(&path, toml::to_string_pretty(settings)?)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
     Ok(())
 }
 
@@ -145,8 +184,18 @@ fn save_providers(config: &ProvidersConfig) -> Result<()> {
     let path = providers_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+        }
     }
     std::fs::write(&path, toml::to_string_pretty(config)?)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
     Ok(())
 }
 

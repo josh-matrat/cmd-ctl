@@ -14,7 +14,7 @@ use crate::store::{KnowledgeEntry, KnowledgeStore};
 /// Base directory for knowledge files.
 pub fn knowledge_dir() -> PathBuf {
     dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .expect("HOME directory not set — cannot determine config path")
         .join(".cmdctl")
         .join("knowledge")
 }

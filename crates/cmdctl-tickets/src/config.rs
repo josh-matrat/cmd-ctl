@@ -20,7 +20,7 @@ pub struct ProvidersConfig {
     pub extra: HashMap<String, toml::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct JiraConfig {
     /// Jira instance URL (e.g., "https://mycompany.atlassian.net").
     pub url: String,
@@ -34,7 +34,19 @@ pub struct JiraConfig {
     pub max_results: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl std::fmt::Debug for JiraConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JiraConfig")
+            .field("url", &self.url)
+            .field("email", &self.email)
+            .field("api_token", &"***")
+            .field("jql", &self.jql)
+            .field("max_results", &self.max_results)
+            .finish()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct NotionConfig {
     /// Notion integration token.
     pub api_token: String,
@@ -52,7 +64,16 @@ pub struct NotionConfig {
     pub user_email: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl std::fmt::Debug for NotionConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NotionConfig")
+            .field("api_token", &"***")
+            .field("database_id", &self.database_id)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ImperriumConfig {
     /// Imperrium API endpoint.
     pub url: String,
@@ -64,10 +85,21 @@ pub struct ImperriumConfig {
     pub user: Option<String>,
 }
 
+impl std::fmt::Debug for ImperriumConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImperriumConfig")
+            .field("url", &self.url)
+            .field("api_token", &"***")
+            .field("project", &self.project)
+            .field("user", &self.user)
+            .finish()
+    }
+}
+
 /// Default config file path.
 pub fn config_path() -> PathBuf {
     dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .expect("HOME directory not set — cannot determine config path")
         .join(".cmdctl")
         .join("providers.toml")
 }
@@ -78,11 +110,55 @@ pub fn load_config() -> Result<ProvidersConfig> {
     if !path.exists() {
         return Ok(ProvidersConfig::default());
     }
+    // Warn if the config file (which may contain API tokens) is readable by others.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(&path) {
+            let mode = meta.permissions().mode();
+            if mode & 0o077 != 0 {
+                tracing::warn!(
+                    "providers.toml has overly permissive mode {:o} — should be 0600. \
+                     Run: chmod 600 {}",
+                    mode & 0o777,
+                    path.display()
+                );
+            }
+        }
+    }
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read {}", path.display()))?;
     let config: ProvidersConfig = toml::from_str(&content)
         .with_context(|| format!("Failed to parse {}", path.display()))?;
+    validate_config(&config)?;
     Ok(config)
+}
+
+/// Validate security-sensitive config values.
+fn validate_config(config: &ProvidersConfig) -> Result<()> {
+    if let Some(ref jira) = config.jira {
+        require_https(&jira.url, "Jira")?;
+    }
+    if let Some(ref imperrium) = config.imperrium {
+        require_https(&imperrium.url, "Imperrium")?;
+    }
+    if let Some(ref notion) = config.notion {
+        if notion.database_id.contains('/') || notion.database_id.contains("..") {
+            anyhow::bail!("Notion database_id contains invalid characters");
+        }
+    }
+    Ok(())
+}
+
+fn require_https(url: &str, provider: &str) -> Result<()> {
+    if !url.is_empty() && !url.starts_with("https://") {
+        anyhow::bail!(
+            "{} URL must use HTTPS to protect credentials (got: {})",
+            provider,
+            url
+        );
+    }
+    Ok(())
 }
 
 /// Write a default example config file if none exists.
@@ -116,7 +192,17 @@ pub fn write_example_config() -> Result<PathBuf> {
 "#;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+        }
     }
     std::fs::write(&path, example)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
     Ok(path)
 }

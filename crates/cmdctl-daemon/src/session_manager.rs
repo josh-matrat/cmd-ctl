@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossbeam_channel::Receiver;
 use parking_lot::Mutex;
 
@@ -118,13 +118,15 @@ impl SessionManager {
             &agent_type,
         )?;
 
-        // If Claude Code session, launch claude.
+        // If Claude Code session, resolve the binary to an absolute path and launch.
         if agent_type == "claude" {
-            if dangerously_skip_permissions {
-                session.write(b"claude --dangerously-skip-permissions\r");
+            let claude_path = resolve_claude_binary()?;
+            let cmd = if dangerously_skip_permissions {
+                format!("{} --dangerously-skip-permissions\r", claude_path)
             } else {
-                session.write(b"claude\r");
-            }
+                format!("{}\r", claude_path)
+            };
+            session.write(cmd.as_bytes());
         }
 
         let entry = SessionEntry {
@@ -317,6 +319,29 @@ impl SessionManager {
             let _ = self.db.update_status(&managed.entry.id, &managed.entry.status);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Binary resolution
+// ---------------------------------------------------------------------------
+
+/// Resolve the `claude` binary to an absolute path to prevent PATH hijacking.
+fn resolve_claude_binary() -> Result<String> {
+    let output = Command::new("which")
+        .arg("claude")
+        .output()
+        .context("Failed to run 'which claude'")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "claude binary not found on PATH — install Claude Code first \
+             (https://docs.anthropic.com/en/docs/claude-code)"
+        );
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() {
+        anyhow::bail!("claude binary not found on PATH");
+    }
+    Ok(path)
 }
 
 // ---------------------------------------------------------------------------
