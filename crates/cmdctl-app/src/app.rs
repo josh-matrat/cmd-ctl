@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use metal::*;
@@ -92,6 +93,16 @@ struct CmdctlApp {
     modifiers: ModifiersState,
 }
 
+/// A context prompt waiting for Claude to become ready before delivery.
+struct PendingPrompt {
+    session_id: String,
+    prompt: String,
+    created: Instant,
+}
+
+/// How long to wait for Claude's prompt before discarding a pending prompt.
+const PENDING_PROMPT_TIMEOUT_SECS: u64 = 30;
+
 struct AppState {
     window: Arc<Window>,
     #[allow(dead_code)]
@@ -117,6 +128,8 @@ struct AppState {
     scale_factor: f64,
     // Mouse position in logical pixels (for click-to-focus).
     cursor_position: (f64, f64),
+    // Prompts deferred until Claude is ready (prevents race condition).
+    pending_prompts: Vec<PendingPrompt>,
 }
 
 impl AppState {
@@ -373,6 +386,9 @@ impl ApplicationHandler for CmdctlApp {
                 if let Ok(sessions) = state.client.list_sessions() {
                     state.sessions = sessions;
                 }
+
+                // Deliver pending prompts once Claude is ready (blocked on prompt).
+                drain_pending_prompts(state);
 
                 // Refresh tickets (cached in daemon, cheap to call each frame).
                 if let Ok(tickets) = state.client.list_tickets() {
@@ -748,6 +764,7 @@ fn init_window(event_loop: &ActiveEventLoop, font: &FontInfo) -> Result<AppState
         quick_terminal: None,
         cols, rows, scale_factor,
         cursor_position: (0.0, 0.0),
+        pending_prompts: Vec::new(),
     })
 }
 
@@ -1145,33 +1162,59 @@ fn open_ticket_session(state: &mut AppState, name: &str, working_dir: &str, cont
     let skip_perms = crate::settings::load_app_settings().general.claude_dangerously_skip_permissions;
     match state.client.create_session(name, "claude", Some(working_dir), None, skip_perms) {
         Ok(session_id) => {
-            // Send the ticket context as the first prompt to the Claude session.
-            // Wait a moment for the session to initialize, then send context.
-            let prompt = format!("{}\r", context_prompt);
-            // We'll send it after a brief delay to let the PTY start.
-            let sid_for_input = session_id.clone();
-            let client_prompt = prompt;
-
             if let Some(slot) = state.first_empty_slot() {
-                state.panes[slot] = Some(session_id);
+                state.panes[slot] = Some(session_id.clone());
                 state.focus = Focus::Pane(slot);
                 resize_pane_sessions(state, font);
             } else {
                 state.focus = Focus::Sidebar;
                 if let Ok(sessions) = state.client.list_sessions() {
-                    if let Some(pos) = sessions.iter().position(|s| s.id == sid_for_input) {
+                    if let Some(pos) = sessions.iter().position(|s| s.id == session_id) {
                         state.sidebar_selected = pos;
                     }
                     state.sessions = sessions;
                 }
             }
 
-            // Queue the context prompt to be sent to the session.
-            // The daemon's Claude session auto-types `claude` — we send our prompt after.
-            let _ = state.client.send_input(&sid_for_input, client_prompt.as_bytes());
+            // Defer the context prompt until Claude's prompt (❯) is detected.
+            // Sending immediately would race with shell startup — if Claude hasn't
+            // started yet, the prompt text could be interpreted as a shell command.
+            state.pending_prompts.push(PendingPrompt {
+                session_id,
+                prompt: format!("{}\r", context_prompt),
+                created: Instant::now(),
+            });
         }
         Err(e) => tracing::error!("Failed to create ticket session: {}", e),
     }
+}
+
+/// Deliver pending prompts to sessions where Claude's prompt is visible.
+/// Drops prompts that have timed out (Claude never started).
+fn drain_pending_prompts(state: &mut AppState) {
+    if state.pending_prompts.is_empty() {
+        return;
+    }
+    let now = Instant::now();
+    state.pending_prompts.retain(|pending| {
+        // Check for timeout.
+        if now.duration_since(pending.created).as_secs() > PENDING_PROMPT_TIMEOUT_SECS {
+            tracing::warn!(
+                "Pending prompt for {} timed out — Claude never became ready, discarding",
+                pending.session_id
+            );
+            return false;
+        }
+        // Check if the session shows Claude's prompt (blocked on "Claude Code prompt").
+        let ready = state.sessions.iter().any(|s| {
+            s.id == pending.session_id && s.status == "blocked: Claude Code prompt"
+        });
+        if ready {
+            let _ = state.client.send_input(&pending.session_id, pending.prompt.as_bytes());
+            return false; // delivered — remove from queue
+        }
+        true // keep waiting
+    });
 }
 
 // ---------------------------------------------------------------------------
