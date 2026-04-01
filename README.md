@@ -11,12 +11,13 @@ CMD CTL is a native macOS terminal built with Metal rendering that doubles as a 
 ## Features
 
 - **Metal-rendered terminal** — GPU-accelerated text rendering via a custom Metal shader pipeline
+- **Quick terminal** — Toggle a fast terminal overlay with `Cmd+T`
 - **Session management** — Run multiple shell and Claude Code sessions in a 2x2 pane grid
 - **Persistent daemon** — Sessions survive window close; reconnect anytime
 - **Block detection** — Automatically detects when sessions are waiting for input or idle
 - **Context estimation** — Tracks approximate context window usage for AI agent sessions
 - **Knowledge base** — Scoped, searchable context storage shared across sessions
-- **Ticket integration** — Pull tickets from Jira, Notion, or Imperrium into your workflow
+- **Ticket integration** — Pull tickets from Jira, Notion, or Imperrium and launch Claude sessions with ticket context
 - **Native macOS** — Dark appearance, vibrancy effects, proper titlebar integration
 
 ## Requirements
@@ -52,12 +53,31 @@ cmdctl-cli kill <session-id>
 cmdctl-cli dump <session-id>
 cmdctl-cli shutdown
 
-# Knowledge and ticket management
+# Knowledge management
 cmdctl-cli knowledge ls
-cmdctl-cli tickets list
+cmdctl-cli knowledge search <query> [scope]
+cmdctl-cli knowledge add <title> <scope> [tags]
+cmdctl-cli knowledge remove <id>
+cmdctl-cli knowledge context [dir]
+cmdctl-cli knowledge summaries [dir]
 ```
 
 ### Keyboard Shortcuts
+
+**Global**
+
+| Shortcut | Action |
+|----------|--------|
+| `Cmd+T` | Toggle quick terminal overlay |
+| `Cmd+N` | New shell session |
+| `Cmd+A` | New Claude Code agent session |
+| `Cmd+W` | Close / back to command center |
+| `Cmd+K` | Kill selected session |
+| `Cmd+1-4` | Switch to pane by number |
+| `Cmd+Shift+1-4` | Assign selected session to pane slot |
+| `Cmd+Arrow` | Navigate between panes |
+
+**Sidebar**
 
 | Shortcut | Action |
 |----------|--------|
@@ -65,11 +85,8 @@ cmdctl-cli tickets list
 | `c` | New Claude Code session |
 | `r` | Rename selected session |
 | `Enter` | Attach to selected session |
-| `Cmd+W` | Close / back to command center |
-| `Cmd+T` | New shell session |
-| `Cmd+1-9` | Switch to session by number |
-| `Cmd+]` / `Cmd+[` | Next / previous session |
-| `Cmd+K` | Kill selected session |
+| `Tab` | Toggle between Sessions and Tickets |
+| `Arrow Up/Down` | Navigate sessions/tickets |
 
 ## Architecture
 
