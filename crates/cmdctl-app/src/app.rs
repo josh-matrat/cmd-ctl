@@ -187,6 +187,17 @@ impl ApplicationHandler for CmdctlApp {
                     alt: self.modifiers.alt_key(),
                 };
 
+                // Quick terminal intercepts all non-Cmd input when visible.
+                if !mods.cmd {
+                    if let Some(qt) = &state.quick_terminal {
+                        if qt.visible {
+                            let sid = qt.session_id.clone();
+                            handle_terminal_input(&event.logical_key, mods, state, &sid);
+                            return;
+                        }
+                    }
+                }
+
                 // Modal intercepts all non-Cmd input.
                 if state.modal.is_some() && !mods.cmd {
                     handle_modal_input(&event.logical_key, state, &self.font);
@@ -335,6 +346,13 @@ impl ApplicationHandler for CmdctlApp {
                         if !state.sessions.iter().any(|s| s.id == *id && s.status != "exited") {
                             *slot = None;
                         }
+                    }
+                }
+
+                // Clean up quick terminal if its session exited.
+                if let Some(qt) = &state.quick_terminal {
+                    if !state.sessions.iter().any(|s| s.id == qt.session_id && s.status != "exited") {
+                        state.quick_terminal = None;
                     }
                 }
 
@@ -713,6 +731,28 @@ fn handle_global_command(cmd: &str, key: &str, state: &mut AppState, event_loop:
                     state.panes[slot] = Some(sid);
                     state.focus = Focus::Pane(slot);
                     resize_pane_sessions(state, font);
+                }
+            }
+        }
+        "quick_terminal.toggle" => {
+            if let Some(qt) = &mut state.quick_terminal {
+                qt.visible = !qt.visible;
+                if qt.visible {
+                    resize_quick_terminal(state, font);
+                }
+            } else {
+                let home = dirs::home_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "~".to_string());
+                match state.client.create_session("Quick Terminal", "shell", Some(&home), None) {
+                    Ok(session_id) => {
+                        state.quick_terminal = Some(QuickTerminal {
+                            session_id,
+                            visible: true,
+                        });
+                        resize_quick_terminal(state, font);
+                    }
+                    Err(e) => tracing::error!("Failed to create quick terminal: {}", e),
                 }
             }
         }
@@ -1135,6 +1175,7 @@ fn handle_resize(state: &mut AppState, size: PhysicalSize<u32>, font: &FontInfo)
         state.cols = new_cols;
         state.rows = new_rows;
         resize_pane_sessions(state, font);
+        resize_quick_terminal(state, font);
     }
 }
 
@@ -1161,6 +1202,11 @@ fn render_frame(state: &mut AppState, font: &FontInfo) {
     for sid in &pane_ids {
         pane_grids.push(state.client.get_grid(sid));
     }
+
+    // Pre-fetch quick terminal grid.
+    let qt_grid = state.quick_terminal.as_ref()
+        .filter(|qt| qt.visible)
+        .map(|qt| state.client.get_grid(&qt.session_id));
 
     // --- Build cell buffer ---
     let mut cells: Vec<(usize, usize, char, [f32; 4], [f32; 4], bool)> = Vec::with_capacity(cols * rows);
@@ -1336,6 +1382,149 @@ fn render_frame(state: &mut AppState, font: &FontInfo) {
                 let idx = row * cols + col;
                 if idx < cells.len() {
                     cells[idx] = (col, row, cell.2, cell.3, cell.4, cell.5);
+                }
+            }
+        }
+    }
+
+    // 7. Quick terminal overlay
+    if let Some(qt) = &state.quick_terminal {
+        if qt.visible {
+            // Dim everything behind the overlay.
+            for cell in cells.iter_mut() {
+                cell.3[0] *= 0.3;
+                cell.3[1] *= 0.3;
+                cell.3[2] *= 0.3;
+                cell.4[0] *= 0.3;
+                cell.4[1] *= 0.3;
+                cell.4[2] *= 0.3;
+            }
+
+            let rect = quick_terminal_rect(cols, rows);
+            let qt_bg: [f32; 4] = [0.08, 0.05, 0.05, 1.0];
+            let border_fg = colors::ANSI[3]; // gold
+
+            // Box-drawing characters.
+            let h = '\u{2500}';  // ─
+            let v = '\u{2502}';  // │
+            let tl = '\u{250C}'; // ┌
+            let tr = '\u{2510}'; // ┐
+            let bl = '\u{2514}'; // └
+            let br = '\u{2518}'; // ┘
+            for ch in [h, v, tl, tr, bl, br] {
+                state.renderer.atlas.get_or_insert(ch, font, sf);
+            }
+
+            // Fill overlay background.
+            for r in rect.row..rect.row + rect.rows {
+                for c in rect.col..rect.col + rect.cols {
+                    if r < rows && c < cols {
+                        let idx = r * cols + c;
+                        if idx < cells.len() {
+                            cells[idx] = (c, r, ' ', colors::FG, qt_bg, false);
+                        }
+                    }
+                }
+            }
+
+            let top = rect.row;
+            let bot = rect.row + rect.rows - 1;
+            let left = rect.col;
+            let right = rect.col + rect.cols - 1;
+
+            // Top border.
+            for c in left..=right {
+                if top < rows && c < cols {
+                    let ch = if c == left { tl } else if c == right { tr } else { h };
+                    let idx = top * cols + c;
+                    if idx < cells.len() {
+                        cells[idx] = (c, top, ch, border_fg, qt_bg, false);
+                    }
+                }
+            }
+
+            // Title centered in top border.
+            let title = " Quick Terminal ";
+            let title_start = left + rect.cols.saturating_sub(title.len()) / 2;
+            for (i, ch) in title.chars().enumerate() {
+                let c = title_start + i;
+                if c < right && top < rows && c < cols {
+                    if ch > ' ' { state.renderer.atlas.get_or_insert(ch, font, sf); }
+                    let idx = top * cols + c;
+                    if idx < cells.len() {
+                        cells[idx] = (c, top, ch, colors::ANSI[15], qt_bg, false);
+                    }
+                }
+            }
+
+            // Bottom border.
+            for c in left..=right {
+                if bot < rows && c < cols {
+                    let ch = if c == left { bl } else if c == right { br } else { h };
+                    let idx = bot * cols + c;
+                    if idx < cells.len() {
+                        cells[idx] = (c, bot, ch, border_fg, qt_bg, false);
+                    }
+                }
+            }
+
+            // Hint centered in bottom border.
+            let hint = " \u{2318}T to close ";
+            let hint_start = left + rect.cols.saturating_sub(hint.len()) / 2;
+            for (i, ch) in hint.chars().enumerate() {
+                let c = hint_start + i;
+                if c < right && bot < rows && c < cols {
+                    if ch > ' ' { state.renderer.atlas.get_or_insert(ch, font, sf); }
+                    let idx = bot * cols + c;
+                    if idx < cells.len() {
+                        cells[idx] = (c, bot, ch, colors::ANSI[10], qt_bg, false);
+                    }
+                }
+            }
+
+            // Left and right borders.
+            for r in (top + 1)..bot {
+                if r < rows {
+                    if left < cols {
+                        let idx = r * cols + left;
+                        if idx < cells.len() {
+                            cells[idx] = (left, r, v, border_fg, qt_bg, false);
+                        }
+                    }
+                    if right < cols {
+                        let idx = r * cols + right;
+                        if idx < cells.len() {
+                            cells[idx] = (right, r, v, border_fg, qt_bg, false);
+                        }
+                    }
+                }
+            }
+
+            // Terminal content inside border.
+            if let Some(Ok(grid)) = &qt_grid {
+                let inner_col = left + 1;
+                let inner_row = top + 1;
+                let inner_cols = rect.cols.saturating_sub(2);
+                let inner_rows = rect.rows.saturating_sub(2);
+
+                for cell in &grid.cells {
+                    let c = cell.col as usize;
+                    let r = cell.row as usize;
+                    if c >= inner_cols || r >= inner_rows { continue; }
+                    let col = inner_col + c;
+                    let row = inner_row + r;
+                    if col >= cols || row >= rows { continue; }
+                    let fg = [cell.fg[0] as f32/255.0, cell.fg[1] as f32/255.0, cell.fg[2] as f32/255.0, cell.fg[3] as f32/255.0];
+                    let mut bg = [cell.bg[0] as f32/255.0, cell.bg[1] as f32/255.0, cell.bg[2] as f32/255.0, cell.bg[3] as f32/255.0];
+                    let show_cursor = cell.is_cursor;
+                    if show_cursor { bg = colors::CURSOR; }
+                    if cell.ch > ' ' {
+                        state.renderer.atlas.get_or_insert(cell.ch, font, sf);
+                    }
+                    let idx = row * cols + col;
+                    if idx < cells.len() {
+                        cells[idx] = (col, row, cell.ch, fg, bg, show_cursor);
+                    }
                 }
             }
         }
