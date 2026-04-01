@@ -69,7 +69,11 @@ impl SessionManager {
         self.next_id += 1;
 
         let size = TermSize { columns: cols, rows, cell_width, cell_height };
-        let original_wd = working_dir.as_deref().map(PathBuf::from);
+        let original_wd = working_dir.as_deref().and_then(|wd| {
+            let path = PathBuf::from(wd);
+            // Canonicalize to resolve symlinks and ".." components.
+            path.canonicalize().ok()
+        });
         let wd_str = working_dir.unwrap_or_default();
 
         // For Claude sessions in a git repo, create an isolated worktree.

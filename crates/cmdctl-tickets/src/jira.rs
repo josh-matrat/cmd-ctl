@@ -3,6 +3,9 @@
 //! Uses the Jira REST API v3 with basic auth (email + API token).
 //! Fetches tickets via JQL and maps them to the unified Ticket type.
 
+use std::io::Write;
+use std::process::Stdio;
+
 use anyhow::{Context, Result};
 
 use crate::config::JiraConfig;
@@ -42,11 +45,22 @@ impl JiraProvider {
         let auth = format!("{}:{}", self.config.email, self.config.api_token);
         let auth_header = format!("Basic {}", base64_encode(auth.as_bytes()));
 
-        let output = std::process::Command::new("curl")
-            .args(["-sS", "-H", &format!("Authorization: {}", auth_header),
+        let mut child = std::process::Command::new("curl")
+            .args(["-sS", "--config", "-",
                    "-H", "Content-Type: application/json", &url])
-            .output()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .context("Failed to execute curl for Jira API")?;
+
+        // Pass auth header via stdin to avoid leaking in process args
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = write!(stdin, "header = \"Authorization: {}\"\n", auth_header);
+        }
+
+        let output = child.wait_with_output()
+            .context("Failed to wait for curl process")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

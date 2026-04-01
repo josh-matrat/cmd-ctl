@@ -3,6 +3,9 @@
 //! Connects to the Imperrium API. Since this is a proprietary system,
 //! the implementation provides the structure with configurable endpoints.
 
+use std::io::Write;
+use std::process::Stdio;
+
 use anyhow::{Context, Result};
 
 use crate::config::ImperriumConfig;
@@ -38,15 +41,25 @@ impl ImperriumProvider {
             url.push_str(&params.join("&"));
         }
 
-        let output = std::process::Command::new("curl")
+        let mut child = std::process::Command::new("curl")
             .args([
-                "-sS",
-                "-H", &format!("Authorization: Bearer {}", self.config.api_token),
+                "-sS", "--config", "-",
                 "-H", "Content-Type: application/json",
                 &url,
             ])
-            .output()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .context("Failed to execute curl for Imperrium API")?;
+
+        // Pass auth header via stdin to avoid leaking in process args
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = write!(stdin, "header = \"Authorization: Bearer {}\"\n", self.config.api_token);
+        }
+
+        let output = child.wait_with_output()
+            .context("Failed to wait for curl process")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

@@ -268,6 +268,10 @@ fn collect_recursive(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
+        // Skip symbolic links to prevent traversal outside the knowledge directory.
+        if path.is_symlink() {
+            continue;
+        }
         if path.is_dir() {
             collect_recursive(&path, files)?;
         } else if path.extension().map(|e| e == "md").unwrap_or(false) {
