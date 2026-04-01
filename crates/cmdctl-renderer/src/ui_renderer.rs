@@ -218,9 +218,9 @@ pub fn build_sidebar(
         for (i, ticket) in tickets.iter().take(max_tickets).enumerate() {
             let is_selected = i == ticket_selected && focused && sidebar_section == SidebarSection::Tickets;
 
-            let max_title = cols.saturating_sub(ticket.key.len() + 6);
+            let max_title = cols.saturating_sub(5);
             let title: String = ticket.title.chars().take(max_title).collect();
-            let line = format!(" {} {} {}", ticket.status_icon, ticket.key, title);
+            let line = format!(" {} {}", ticket.status_icon, title);
 
             let fg = if is_selected {
                 colors::ANSI[15]
@@ -402,6 +402,91 @@ pub fn build_rename_input(
         ("  Rename Session", colors::ANSI[7]),
         ("", colors::FG),
         ("  New name:", colors::ANSI[7]),
+        ("", colors::FG),
+    ];
+
+    for (line_idx, (text, fg)) in header_lines.iter().enumerate() {
+        if line_idx >= rows { break; }
+        for (i, ch) in text.chars().enumerate() {
+            if i >= cols { break; }
+            if ch > ' ' { atlas.get_or_insert(ch, font, scale); }
+            let idx = line_idx * cols + i;
+            if idx < cells.len() {
+                cells[idx] = (i, line_idx, ch, *fg, colors::BG, false);
+            }
+        }
+    }
+
+    let input_row = 5;
+    if input_row < rows {
+        let prompt = "  > ";
+        let input_chars: Vec<char> = input.chars().collect();
+        let input_fg = colors::ANSI[15];
+        let input_bg = [0.12, 0.08, 0.05, 1.0];
+
+        for col in 0..cols {
+            let idx = input_row * cols + col;
+            if idx < cells.len() { cells[idx].4 = input_bg; }
+        }
+        for (i, ch) in prompt.chars().enumerate() {
+            if i >= cols { break; }
+            if ch > ' ' { atlas.get_or_insert(ch, font, scale); }
+            let idx = input_row * cols + i;
+            if idx < cells.len() {
+                cells[idx] = (i, input_row, ch, colors::ANSI[3], input_bg, false);
+            }
+        }
+        let offset = prompt.len();
+        for (i, &ch) in input_chars.iter().enumerate() {
+            let col = offset + i;
+            if col >= cols { break; }
+            let bg = if i == cursor_pos { colors::CURSOR } else { input_bg };
+            if ch > ' ' { atlas.get_or_insert(ch, font, scale); }
+            let idx = input_row * cols + col;
+            if idx < cells.len() {
+                cells[idx] = (col, input_row, ch, input_fg, bg, i == cursor_pos);
+            }
+        }
+        if cursor_pos >= input_chars.len() {
+            let col = offset + cursor_pos;
+            if col < cols {
+                let idx = input_row * cols + col;
+                if idx < cells.len() {
+                    cells[idx] = (col, input_row, ' ', input_fg, colors::CURSOR, true);
+                }
+            }
+        }
+    }
+
+    cells
+}
+
+// ---------------------------------------------------------------------------
+// Modal: ticket title input
+// ---------------------------------------------------------------------------
+
+pub fn build_ticket_title_input(
+    cols: usize,
+    rows: usize,
+    input: &str,
+    cursor_pos: usize,
+    atlas: &mut GlyphAtlas,
+    font: &FontInfo,
+    scale: f64,
+) -> Vec<(usize, usize, char, [f32; 4], [f32; 4], bool)> {
+    let mut cells = Vec::new();
+
+    for row in 0..rows {
+        for col in 0..cols {
+            cells.push((col, row, ' ', colors::FG, colors::BG, false));
+        }
+    }
+
+    let header_lines: [(&str, [f32; 4]); 5] = [
+        ("", colors::FG),
+        ("  Set Ticket Title", colors::ANSI[7]),
+        ("", colors::FG),
+        ("  Title:", colors::ANSI[7]),
         ("", colors::FG),
     ];
 
@@ -737,12 +822,13 @@ pub fn build_ticket_detail(
     }
 
     // Footer hints — push to bottom area
-    let footer_start = rows.saturating_sub(4);
+    let footer_start = rows.saturating_sub(5);
     while lines.len() < footer_start {
         lines.push(StyledLine::new(""));
     }
     lines.push(StyledLine::new(""));
     lines.push(StyledLine::new("  Escape/Enter   Close").fg(colors::ANSI[10]));
+    lines.push(StyledLine::new("  r              Edit title").fg(colors::ANSI[10]));
     lines.push(StyledLine::new("  \u{2318}\u{21a9}           Work on ticket").fg(colors::ANSI[10]));
 
     render_lines(&lines, cols, rows, colors::BG, &mut cells, atlas, font, scale);

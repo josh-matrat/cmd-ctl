@@ -79,6 +79,8 @@ pub enum Request {
     RefreshTickets,
     /// Get a specific ticket by key.
     GetTicket { key: String },
+    /// Update a ticket's title locally.
+    UpdateTicketTitle { key: String, title: String },
 }
 
 /// Messages sent from the daemon to a client.

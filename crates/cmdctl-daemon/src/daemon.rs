@@ -339,6 +339,10 @@ fn process_request(
                 None => Response::Error(format!("Ticket not found: {}", key)),
             }
         }
+        Request::UpdateTicketTitle { key, title } => {
+            ticket_manager.lock().update_title(&key, title);
+            Response::Ok
+        }
 
         // -- Knowledge operations --
 
