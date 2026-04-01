@@ -3,6 +3,7 @@
 //! Queries a Notion database via the Notion API and maps entries to tickets.
 
 use anyhow::{Context, Result};
+use tracing;
 
 use crate::config::NotionConfig;
 use crate::provider::{Ticket, TicketPriority, TicketProvider, TicketStatus};
@@ -28,17 +29,93 @@ impl NotionProvider {
         self.config.priority_property.as_deref().unwrap_or("Priority")
     }
 
+    /// Resolve a user email to a Notion user ID via the users list API.
+    fn resolve_user_id_by_email(&self, email: &str) -> Result<Option<String>> {
+        let output = std::process::Command::new("curl")
+            .args([
+                "-sS",
+                "-H", &format!("Authorization: Bearer {}", self.config.api_token),
+                "-H", "Notion-Version: 2022-06-28",
+                "https://api.notion.com/v1/users",
+            ])
+            .output()
+            .context("Failed to execute curl for Notion users API")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Notion users API request failed: {}", stderr);
+        }
+
+        let body = String::from_utf8_lossy(&output.stdout);
+        // Search for the email in person objects and extract the corresponding user id.
+        // Notion users response has "results" array with objects containing "id" and
+        // nested "person": { "email": "..." }.
+        let email_pattern = format!("\"email\":\"{}\"", email);
+        // Also handle spaces after colon.
+        let email_pattern_spaced = format!("\"email\": \"{}\"", email);
+
+        // Find the user object containing this email and extract its id.
+        // We iterate through "results" objects looking for the email match.
+        let results_pos = match body.find("\"results\"") {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+        let section = &body[results_pos..];
+
+        // Find the email in the response.
+        let email_pos = section.find(&email_pattern)
+            .or_else(|| section.find(&email_pattern_spaced));
+        let email_pos = match email_pos {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+
+        // Walk backwards from the email match to find the nearest "id" field for this user object.
+        let before_email = &section[..email_pos];
+        // Find the last "id" occurrence before the email.
+        if let Some(id_pos) = before_email.rfind("\"id\"") {
+            let id_after = &before_email[id_pos..];
+            Ok(extract_string_field(id_after, "id"))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Determine the effective assignee user ID for filtering.
+    fn effective_assignee_id(&self) -> Option<String> {
+        // Explicit assignee (user ID) takes precedence.
+        if let Some(ref id) = self.config.assignee {
+            return Some(id.clone());
+        }
+        // Otherwise try to resolve user_email to a Notion user ID.
+        if let Some(ref email) = self.config.user_email {
+            match self.resolve_user_id_by_email(email) {
+                Ok(Some(id)) => {
+                    tracing::info!("Resolved Notion user ID for {}: {}", email, id);
+                    return Some(id);
+                }
+                Ok(None) => {
+                    tracing::warn!("No Notion user found for email: {}", email);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to resolve Notion user by email: {}", e);
+                }
+            }
+        }
+        None
+    }
+
     fn fetch_raw(&self) -> Result<String> {
         let url = format!(
             "https://api.notion.com/v1/databases/{}/query",
             self.config.database_id
         );
 
-        // Build a filter body if assignee is set.
-        let body = if let Some(ref assignee) = self.config.assignee {
+        // Build a filter body if we can resolve an assignee user ID.
+        let body = if let Some(user_id) = self.effective_assignee_id() {
             format!(
                 r#"{{"filter":{{"property":"Assignee","people":{{"contains":"{}"}}}}}}"#,
-                assignee
+                user_id
             )
         } else {
             "{}".to_string()

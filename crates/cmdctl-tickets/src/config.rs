@@ -46,8 +46,10 @@ pub struct NotionConfig {
     pub status_property: Option<String>,
     /// Property name for priority. Defaults to "Priority".
     pub priority_property: Option<String>,
-    /// Filter to only show tickets assigned to this person.
+    /// Filter to only show tickets assigned to this person (Notion user ID).
     pub assignee: Option<String>,
+    /// User email — resolved to a Notion user ID for assignee filtering.
+    pub user_email: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

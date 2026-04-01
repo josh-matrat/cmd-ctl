@@ -1,5 +1,6 @@
 //! Ticket manager — owns providers, handles caching and refresh.
 
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use tracing;
@@ -86,6 +87,10 @@ impl TicketManager {
                 }
             }
         }
+
+        // Deduplicate tickets by key.
+        let mut seen = HashSet::new();
+        all_tickets.retain(|t| seen.insert(t.key.clone()));
 
         // Sort: blocked/in-progress first, then by priority.
         all_tickets.sort_by(|a, b| {
