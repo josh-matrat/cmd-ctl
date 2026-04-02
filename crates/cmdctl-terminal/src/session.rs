@@ -99,10 +99,13 @@ impl Session {
         let term = Term::new(term_config, &size, event_proxy.clone());
         let term = Arc::new(FairMutex::new(term));
 
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-
         let pty_config = tty::Options {
-            shell: Some(tty::Shell::new(shell, vec![String::from("-l")])),
+            // Let alacritty use its default macOS shell command, which spawns
+            // the shell via /usr/bin/login. This creates a proper login session
+            // with full environment (PATH, etc.) — matching Terminal.app behavior.
+            // Providing a custom shell would bypass this and inherit the minimal
+            // launchd environment when the app is launched from Finder/Spotlight.
+            shell: None,
             working_directory: working_dir,
             ..Default::default()
         };
