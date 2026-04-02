@@ -22,8 +22,6 @@ use cmdctl_renderer::grid_renderer::{colors, GridRenderer};
 use cmdctl_renderer::text::FontInfo;
 use cmdctl_renderer::ui_renderer::{self, SidebarSection};
 
-const FONT_NAME: &str = "Menlo";
-const FONT_SIZE: f64 = 13.0;
 const INITIAL_COLS: u16 = 160;
 const INITIAL_ROWS: u16 = 45;
 const SIDEBAR_COLS: usize = 30;
@@ -167,7 +165,11 @@ impl AppState {
 
 impl CmdctlApp {
     fn new() -> Result<Self> {
-        let font = FontInfo::load(FONT_NAME, FONT_SIZE)?;
+        let settings = crate::settings::load_app_settings();
+        let font = FontInfo::load(
+            &settings.general.font_name,
+            settings.general.font_size,
+        )?;
         Ok(Self {
             font,
             keybindings: KeybindingManager::new(),
@@ -510,10 +512,11 @@ fn build_native_menu() {
             AnyClass::get(c"NSMenuItem").unwrap(),
             alloc
         ];
+        let settings_action = objc2::sel!(settingsAction:);
         let settings_item: *mut AnyObject = msg_send![
             settings_item,
             initWithTitle: settings_title,
-            action: std::ptr::null::<std::ffi::c_void>(),
+            action: settings_action,
             keyEquivalent: settings_key
         ];
 
@@ -741,7 +744,11 @@ fn init_window(event_loop: &ActiveEventLoop, font: &FontInfo) -> Result<AppState
         physical.height as f64,
     ));
 
-    let renderer_font = FontInfo::load(FONT_NAME, FONT_SIZE)?;
+    let settings = crate::settings::load_app_settings();
+    let renderer_font = FontInfo::load(
+        &settings.general.font_name,
+        settings.general.font_size,
+    )?;
     let renderer = GridRenderer::new(&device, renderer_font, scale_factor)?;
 
     let cols = ((physical.width as f64 / scale_factor) / cell_w).max(1.0) as u16;

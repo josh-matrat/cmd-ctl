@@ -29,11 +29,25 @@ pub struct FontInfo {
     pub descent: f64,
 }
 
+/// Monospace fonts to try, in order, if the requested font is unavailable.
+const FALLBACK_FONTS: &[&str] = &["Menlo", "Monaco", "Courier", "Courier New"];
+
 impl FontInfo {
-    /// Load a monospace font by name and size (in points).
+    /// Load a monospace font by name with fallbacks, then by size (in points).
+    /// Tries the requested font first, then falls back through standard
+    /// macOS monospace fonts so the app can start on any Mac.
     pub fn load(font_name: &str, size: f64) -> Result<Self> {
         let font = ct_font::new_from_name(font_name, size)
-            .map_err(|_| anyhow::anyhow!("Failed to load font: {}", font_name))?;
+            .or_else(|_| {
+                tracing::warn!("Font '{}' not found, trying fallbacks", font_name);
+                FALLBACK_FONTS.iter()
+                    .filter(|&&f| f != font_name)
+                    .find_map(|&f| ct_font::new_from_name(f, size).ok())
+                    .ok_or(())
+            })
+            .map_err(|_| anyhow::anyhow!(
+                "No usable monospace font found (tried '{}' and fallbacks)", font_name
+            ))?;
 
         let ascent = font.ascent();
         let descent = font.descent();
