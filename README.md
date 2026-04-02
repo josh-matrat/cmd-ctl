@@ -12,12 +12,13 @@ CMD CTL is a native macOS terminal built with Metal rendering that doubles as a 
 
 - **Metal-rendered terminal** — GPU-accelerated text rendering via a custom Metal shader pipeline
 - **Quick terminal** — Toggle a fast terminal overlay with `Cmd+T`
-- **Session management** — Run multiple shell and Claude Code sessions in a 2x2 pane grid
+- **Session management** — Run multiple shell and Claude Code sessions in a 2x2 pane grid with minimize/restore
 - **Persistent daemon** — Sessions survive window close; reconnect anytime
 - **Block detection** — Automatically detects when sessions are waiting for input or idle
 - **Context estimation** — Tracks approximate context window usage for AI agent sessions
 - **Knowledge base** — Scoped, searchable context storage shared across sessions
-- **Ticket integration** — Pull tickets from Jira, Notion, or Imperrium and launch Claude sessions with ticket context
+- **Ticket integration** — Pull tickets from Jira, Notion, or Imperrium; browse, create, update status, and launch agent sessions with full ticket context
+- **Commands & Skills** — Extensible markdown-based commands and reusable Claude Code skill workflows, loaded from plugins or user-defined files
 - **Native macOS** — Dark appearance, vibrancy effects, proper titlebar integration
 
 ## Requirements
@@ -71,7 +72,8 @@ cmdctl-cli knowledge summaries [dir]
 | `Cmd+T` | Toggle quick terminal overlay |
 | `Cmd+N` | New shell session |
 | `Cmd+A` | New Claude Code agent session |
-| `Cmd+W` | Close / back to command center |
+| `Cmd+W` | Toggle ticket portal |
+| `Cmd+M` | Minimize focused session (hide from panes) |
 | `Cmd+K` | Kill selected session |
 | `Cmd+1-4` | Switch to pane by number |
 | `Cmd+Shift+1-4` | Assign selected session to pane slot |
@@ -84,9 +86,123 @@ cmdctl-cli knowledge summaries [dir]
 | `n` | New shell session |
 | `c` | New Claude Code session |
 | `r` | Rename selected session |
-| `Enter` | Attach to selected session |
-| `Tab` | Toggle between Sessions and Tickets |
-| `Arrow Up/Down` | Navigate sessions/tickets |
+| `Enter` | Attach to selected session / open detail |
+| `Tab` | Cycle: Sessions → Tickets → Skills → Commands |
+| `Arrow Up/Down` | Navigate items in active section |
+| `Cmd+Enter` | Start agent session on selected ticket |
+
+## Ticket Integration
+
+CMD CTL connects to external ticket providers so you can browse, create, and act on issues without leaving the terminal. Tickets are fetched by the daemon and auto-refresh every 5 minutes.
+
+### Supported Providers
+
+| Provider | Configuration |
+|----------|---------------|
+| **Jira** | URL, email, API token. Optional JQL filter, project key, issue type |
+| **Notion** | API token, database ID. Custom property mappings for title/status/priority |
+| **Imperrium** | API endpoint, token. Project/workspace and user identifiers |
+
+Providers are configured in `~/.cmdctl/providers.toml`.
+
+### Ticket Portal
+
+Open the ticket portal with `Cmd+W` to get a full-screen overlay for managing tickets.
+
+**List view** — Browse all tickets sorted by status and priority. Navigate with arrow keys, press `Enter` to view details, `s` to change status, `r` to rename, `n` to create a new ticket, or `R` to force-refresh from all providers.
+
+**Detail view** — Full ticket info with markdown-formatted description. Scroll with arrow keys. Press `s` to update status or `r` to edit the title.
+
+**Create view** — Press `n` from the list to create a new ticket. `Tab` cycles between title, description, and priority fields. `Enter` submits to the first provider that supports creation.
+
+### Launching Agents on Tickets
+
+Select a ticket in the portal or sidebar and press `Cmd+Enter` to spawn a Claude Code session pre-loaded with the ticket's key, title, status, priority, description, labels, and URL as context. The agent prompt is delivered automatically once the session is ready.
+
+| Shortcut | Context | Action |
+|----------|---------|--------|
+| `Cmd+W` | Global | Toggle ticket portal |
+| `Cmd+Enter` | Portal or sidebar | Start agent on selected ticket |
+| `↑/↓` | Portal list | Navigate tickets |
+| `Enter` | Portal list | View ticket detail |
+| `s` | Portal list/detail | Change ticket status |
+| `r` | Portal list/detail | Edit ticket title |
+| `n` | Portal list | Create new ticket |
+| `R` | Portal list | Force refresh |
+| `Esc` | Portal | Close / back |
+
+## Commands & Skills
+
+The sidebar provides access to four sections, cycled with `Tab`: **Sessions**, **Tickets**, **Skills**, and **Commands**.
+
+### Skills
+
+Skills are reusable Claude Code procedures defined as markdown files with YAML frontmatter. They represent automation tasks, integration hooks, or custom workflows. Skills are loaded from:
+
+- **Plugin marketplace:** `~/.claude/plugins/marketplaces/*/plugins/*/skills/*/SKILL.md`
+- **User-defined:** `~/.claude/skills/*/SKILL.md`
+
+Each skill file uses the format:
+
+```yaml
+---
+name: "Skill Name"
+description: "What this skill does"
+---
+
+Markdown content with instructions, steps, or decision trees...
+```
+
+### Commands
+
+Commands are executable markdown definitions loaded from:
+
+- **Plugin marketplace:** `~/.claude/plugins/marketplaces/*/plugins/*/commands/*.md`
+- **User-defined:** `~/.claude/commands/*.md`
+
+Same frontmatter format as skills, providing command-palette-style access to complex workflows.
+
+### Browsing Skills & Commands
+
+Navigate to the Skills or Commands section in the sidebar with `Tab`, use arrow keys to select, and press `Enter` to view the full markdown content in a scrollable modal.
+
+## Session Management
+
+CMD CTL runs multiple shell and Claude Code sessions in a 2x2 pane grid. Sessions are owned by the persistent daemon — they keep running even if the window is closed.
+
+### Minimize & Restore
+
+Press `Cmd+M` to minimize the focused session. The session is removed from its pane slot but keeps running in the background. Minimized sessions remain visible in the sidebar and can be restored at any time:
+
+- Select a session in the sidebar and press `Enter` to assign it to the next free pane
+- Use `Cmd+Shift+1-4` to assign a session to a specific pane slot
+
+When a session is minimized, focus shifts to the nearest occupied pane. If no panes are occupied, focus returns to the sidebar.
+
+### Session Status
+
+Each session in the sidebar shows its current state:
+
+| Indicator | Meaning |
+|-----------|---------|
+| Running | Session active (in pane or minimized) |
+| Blocked | Agent waiting for user input |
+| Idle | Session inactive but still alive |
+| Exited | Session terminated |
+
+Agent sessions additionally display approximate context window usage (0–100%).
+
+### Pane Layout
+
+| Shortcut | Action |
+|----------|--------|
+| `Cmd+M` | Minimize focused session |
+| `Cmd+1-4` | Focus pane by number |
+| `Cmd+Shift+1-4` | Assign session to pane slot |
+| `Cmd+Arrow` | Navigate between adjacent panes |
+| `Cmd+K` | Kill focused session |
+| `Cmd+N` | New shell session |
+| `Cmd+A` | New Claude Code agent session |
 
 ## Architecture
 
