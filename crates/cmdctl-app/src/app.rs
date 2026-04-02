@@ -826,21 +826,6 @@ fn init_window(event_loop: &ActiveEventLoop, font: &FontInfo) -> Result<AppState
             ];
             let _: () = msg_send![ns_window, setBackgroundColor: bg_color];
 
-            // Glass effect behind content.
-            let ve_class = AnyClass::get(c"NSVisualEffectView").unwrap();
-            let ve_view: *mut AnyObject = msg_send![ve_class, new];
-            let _: () = msg_send![ve_view, setMaterial: 2_i64];       // Dark
-            let _: () = msg_send![ve_view, setBlendingMode: 0_i64];   // behindWindow
-            let _: () = msg_send![ve_view, setState: 1_i64];          // active
-            let _: () = msg_send![ve_view, setAutoresizingMask: 18_u64]; // w+h
-
-            let superview: *mut AnyObject = msg_send![ns_view, superview];
-            if !superview.is_null() {
-                let _: () = msg_send![superview, addSubview: ve_view, positioned: 1_i64, relativeTo: ns_view];
-            } else {
-                let _: () = msg_send![ns_view, addSubview: ve_view, positioned: 1_i64, relativeTo: std::ptr::null::<AnyObject>()];
-            }
-
             let _: () = msg_send![ns_view, setWantsLayer: true];
             let _: () = msg_send![ns_view, setLayer: layer_obj];
 
@@ -1072,6 +1057,18 @@ fn handle_global_command(cmd: &str, key: &str, state: &mut AppState, event_loop:
                 resize_pane_sessions(state, font);
             } else {
                 event_loop.exit();
+            }
+        }
+        "session.minimize" => {
+            // Remove the focused session from its pane (session keeps running).
+            // It can be reopened from the sessions list in the sidebar.
+            if let Focus::Pane(idx) = &state.focus {
+                let idx = *idx;
+                state.panes[idx] = None;
+                state.focus = state.nearest_occupied_pane(idx)
+                    .map(Focus::Pane)
+                    .unwrap_or(Focus::Sidebar);
+                resize_pane_sessions(state, font);
             }
         }
         "session.kill" => {
