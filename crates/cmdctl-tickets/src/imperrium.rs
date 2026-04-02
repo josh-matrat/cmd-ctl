@@ -137,7 +137,7 @@ impl ImperriumProvider {
             .or_else(|| extract_string_field(json, "summary"))
             .unwrap_or_default();
 
-        let description = extract_string_field(json, "description")
+        let description = extract_string_field_escaped(json, "description")
             .unwrap_or_default();
 
         let status_str = extract_string_field(json, "status")
@@ -205,4 +205,39 @@ fn extract_string_field(json: &str, field: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Like `extract_string_field` but handles JSON escape sequences (for multi-line descriptions).
+fn extract_string_field_escaped(json: &str, field: &str) -> Option<String> {
+    let pattern = format!("\"{}\"", field);
+    let pos = json.find(&pattern)?;
+    let after_key = &json[pos + pattern.len()..];
+    let colon_pos = after_key.find(':')?;
+    let after_colon = after_key[colon_pos + 1..].trim_start();
+    if !after_colon.starts_with('"') {
+        return None;
+    }
+    let mut result = String::new();
+    let mut escaped = false;
+    for ch in after_colon[1..].chars() {
+        if escaped {
+            match ch {
+                'n' => result.push('\n'),
+                'r' => {}
+                't' => result.push('\t'),
+                '"' => result.push('"'),
+                '\\' => result.push('\\'),
+                '/' => result.push('/'),
+                _ => { result.push('\\'); result.push(ch); }
+            }
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            return Some(result);
+        } else {
+            result.push(ch);
+        }
+    }
+    None
 }

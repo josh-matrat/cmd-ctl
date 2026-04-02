@@ -165,10 +165,12 @@ impl JiraProvider {
             key
         );
 
+        let description = extract_adf_plain_text(fields);
+
         Some(Ticket {
             key,
             title,
-            description: String::new(), // Skip full description for list view
+            description,
             status,
             priority,
             provider: "jira".to_string(),
@@ -459,4 +461,102 @@ fn extract_nested_string(json: &str, outer: &str, inner: &str) -> Option<String>
     let close = after[brace..].find('}')?;
     let obj = &after[brace..brace + close + 1];
     extract_string_field(obj, inner)
+}
+
+/// Extract plain text from a Jira ADF (Atlassian Document Format) description field.
+///
+/// ADF is a nested JSON structure with `"text"` leaf nodes containing the actual content.
+/// We locate the `"description"` object and collect all text values.
+fn extract_adf_plain_text(fields_json: &str) -> String {
+    let desc_pat = "\"description\"";
+    let pos = match fields_json.find(desc_pat) {
+        Some(p) => p,
+        None => return String::new(),
+    };
+
+    let after = &fields_json[pos + desc_pat.len()..];
+    let colon = match after.find(':') {
+        Some(c) => c,
+        None => return String::new(),
+    };
+    let value_start = after[colon + 1..].trim_start();
+
+    // null or missing description
+    if !value_start.starts_with('{') {
+        return String::new();
+    }
+
+    // Extract the full ADF object by brace-matching.
+    let mut depth = 0i32;
+    let mut end_idx = 0;
+    for (i, ch) in value_start.char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 { end_idx = i; break; }
+            }
+            _ => {}
+        }
+    }
+    if end_idx == 0 {
+        return String::new();
+    }
+    let adf = &value_start[..=end_idx];
+
+    // Collect all "text": "<string>" field values from the ADF tree.
+    let text_pat = "\"text\"";
+    let mut parts: Vec<String> = Vec::new();
+    let mut search = 0;
+
+    while search < adf.len() {
+        let rel = match adf[search..].find(text_pat) {
+            Some(r) => r,
+            None => break,
+        };
+        let abs = search + rel;
+        let remainder = &adf[abs + text_pat.len()..];
+        let trimmed = remainder.trim_start();
+
+        // Only match field names (followed by ':'), not type values like "type":"text".
+        if trimmed.starts_with(':') {
+            let after_colon = trimmed[1..].trim_start();
+            if after_colon.starts_with('"') {
+                if let Some(s) = extract_json_string_escaped(&after_colon[1..]) {
+                    parts.push(s);
+                }
+            }
+        }
+        search = abs + text_pat.len();
+    }
+
+    parts.join("\n")
+}
+
+/// Extract a JSON string value handling escape sequences.
+/// `s` should start just after the opening double-quote.
+fn extract_json_string_escaped(s: &str) -> Option<String> {
+    let mut result = String::new();
+    let mut escaped = false;
+    for ch in s.chars() {
+        if escaped {
+            match ch {
+                'n' => result.push('\n'),
+                'r' => {}
+                't' => result.push('\t'),
+                '"' => result.push('"'),
+                '\\' => result.push('\\'),
+                '/' => result.push('/'),
+                _ => { result.push('\\'); result.push(ch); }
+            }
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            return Some(result);
+        } else {
+            result.push(ch);
+        }
+    }
+    None
 }

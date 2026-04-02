@@ -64,6 +64,9 @@ pub struct NotionConfig {
     pub status_property: Option<String>,
     /// Property name for priority. Defaults to "Priority".
     pub priority_property: Option<String>,
+    /// Property name for description/body text. If set, this property is used instead
+    /// of fetching page block content (which requires an extra API call per ticket).
+    pub description_property: Option<String>,
     /// Filter to only show tickets assigned to this person (Notion user ID).
     pub assignee: Option<String>,
     /// User email — resolved to a Notion user ID for assignee filtering.
@@ -191,6 +194,7 @@ pub fn write_example_config() -> Result<PathBuf> {
 # title_property = "Name"
 # status_property = "Status"
 # priority_property = "Priority"
+# description_property = "Description"  # optional — avoids extra API calls per ticket
 
 # [imperrium]
 # url = "https://api.imperrium.example.com"

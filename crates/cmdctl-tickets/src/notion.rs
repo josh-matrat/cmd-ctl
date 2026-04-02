@@ -250,10 +250,18 @@ impl NotionProvider {
         let short_id = if id.len() > 8 { &id[..8] } else { &id };
         let key = format!("NOTION-{}", short_id);
 
+        // Try description property first, then fall back to fetching page blocks.
+        let description = if let Some(ref desc_prop) = self.config.description_property {
+            self.extract_rich_text_property(json, desc_prop)
+                .unwrap_or_default()
+        } else {
+            self.fetch_page_content(&id)
+        };
+
         Some(Ticket {
             key,
             title,
-            description: String::new(),
+            description,
             status,
             priority,
             provider: "notion".to_string(),
@@ -261,6 +269,55 @@ impl NotionProvider {
             assignee: None,
             labels: Vec::new(),
         })
+    }
+
+    /// Fetch a page's block children and extract plain text content.
+    fn fetch_page_content(&self, page_id: &str) -> String {
+        // Validate page_id to prevent path traversal.
+        if !page_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return String::new();
+        }
+
+        let url = format!(
+            "https://api.notion.com/v1/blocks/{}/children?page_size=100",
+            page_id
+        );
+
+        let child = std::process::Command::new("curl")
+            .args([
+                "-sS", "--config", "-",
+                "-H", "Content-Type: application/json",
+                "-H", "Notion-Version: 2022-06-28",
+                &url,
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
+
+        let mut child = match child {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("Failed to fetch Notion page blocks: {}", e);
+                return String::new();
+            }
+        };
+
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = write!(stdin, "header = \"Authorization: Bearer {}\"\n", self.config.api_token);
+        }
+
+        let output = match child.wait_with_output() {
+            Ok(o) => o,
+            Err(_) => return String::new(),
+        };
+
+        if !output.status.success() {
+            return String::new();
+        }
+
+        let body = String::from_utf8_lossy(&output.stdout);
+        extract_all_plain_text(&body)
     }
 
     fn extract_title_from_properties(&self, json: &str) -> Option<String> {
@@ -281,6 +338,16 @@ impl NotionProvider {
         } else {
             None
         }
+    }
+
+    fn extract_rich_text_property(&self, json: &str, prop_name: &str) -> Option<String> {
+        let pattern = format!("\"{}\"", prop_name);
+        let pos = json.find(&pattern)?;
+        let after = &json[pos..];
+        // Collect all "plain_text" values within a reasonable range of this property.
+        let scope = if after.len() > 2000 { &after[..2000] } else { after };
+        let text = extract_all_plain_text(scope);
+        if text.is_empty() { None } else { Some(text) }
     }
 
     fn extract_select_property(&self, json: &str, prop_name: &str) -> Option<String> {
@@ -325,4 +392,63 @@ fn extract_string_field(json: &str, field: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Extract all `"plain_text": "..."` values from a Notion JSON response.
+fn extract_all_plain_text(json: &str) -> String {
+    let pat = "\"plain_text\"";
+    let mut parts = Vec::new();
+    let mut search = 0;
+
+    while search < json.len() {
+        let rel = match json[search..].find(pat) {
+            Some(r) => r,
+            None => break,
+        };
+        let abs = search + rel;
+        let after = &json[abs + pat.len()..];
+        let trimmed = after.trim_start();
+
+        if trimmed.starts_with(':') {
+            let val = trimmed[1..].trim_start();
+            if val.starts_with('"') {
+                if let Some((s, _len)) = extract_json_string_escaped(&val[1..]) {
+                    if !s.is_empty() {
+                        parts.push(s);
+                    }
+                }
+            }
+        }
+        search = abs + pat.len();
+    }
+
+    parts.join(" ")
+}
+
+/// Extract a JSON string value handling escape sequences.
+/// Returns the unescaped string and its byte length in the source.
+fn extract_json_string_escaped(s: &str) -> Option<(String, usize)> {
+    let mut result = String::new();
+    let mut escaped = false;
+    for (i, ch) in s.chars().enumerate() {
+        if escaped {
+            match ch {
+                'n' => result.push('\n'),
+                'r' => {}
+                't' => result.push('\t'),
+                '"' => result.push('"'),
+                '\\' => result.push('\\'),
+                '/' => result.push('/'),
+                _ => { result.push('\\'); result.push(ch); }
+            }
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            return Some((result, i));
+        } else {
+            result.push(ch);
+        }
+    }
+    None
 }
