@@ -213,6 +213,12 @@ Agent sessions additionally display approximate context window usage (0–100%).
 | `Cmd+N` | New shell session |
 | `Cmd+A` | New Claude Code agent session |
 
+## Text Editors in Quick Terminal
+
+The quick terminal (`Cmd+T`) supports terminal-based text editors like `nano`, `vim`, and `neovim`. You can open and edit files directly within the overlay — full keyboard input, syntax highlighting, and all editor features work as expected.
+
+<!-- screenshot placeholder -->
+
 ## Architecture
 
 CMD CTL is organized as a Cargo workspace:
