@@ -326,11 +326,17 @@ impl SessionManager {
 // ---------------------------------------------------------------------------
 
 /// Resolve the `claude` binary to an absolute path to prevent PATH hijacking.
+///
+/// When the app is launched from Finder/Spotlight, the daemon inherits a minimal
+/// launchd environment whose PATH lacks user-installed tool directories
+/// (~/.local/bin, /opt/homebrew/bin, etc.). We spawn a login shell to perform
+/// the lookup so that ~/.zprofile and friends are sourced first.
 fn resolve_claude_binary() -> Result<String> {
-    let output = Command::new("which")
-        .arg("claude")
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let output = Command::new(&shell)
+        .args(["-lc", "which claude"])
         .output()
-        .context("Failed to run 'which claude'")?;
+        .context("Failed to resolve claude binary via login shell")?;
     if !output.status.success() {
         anyhow::bail!(
             "claude binary not found on PATH — install Claude Code first \
