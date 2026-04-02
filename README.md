@@ -175,6 +175,10 @@ Navigate to the Skills or Commands section in the sidebar with `Tab`, use arrow 
 
 CMD CTL runs multiple shell and Claude Code sessions in a 2x2 pane grid. Sessions are owned by the persistent daemon — they keep running even if the window is closed.
 
+
+<img width="1505" height="924" alt="image" src="https://github.com/user-attachments/assets/1bed8c2e-4cbb-4f34-a9e6-ccc05c505812" />
+
+
 ### Minimize & Restore
 
 Press `Cmd+M` to minimize the focused session. The session is removed from its pane slot but keeps running in the background. Minimized sessions remain visible in the sidebar and can be restored at any time:
