@@ -412,12 +412,20 @@ pub fn build_sidebar(
     lines.push(sb("  \u{2318}c Claude").fg(colors::ANSI[3]));
     lines.push(sb("  \u{2318}r Rename").fg(colors::ANSI[6]));
     lines.push(sb(""));
+    lines.push(sb(" TICKETS").fg(colors::ANSI[10]));
+    lines.push(sb("  \u{2318}w  Ticket portal").fg(colors::ANSI[6]));
+    lines.push(sb("  \u{2318}\u{21a9}  Work ticket").fg(colors::ANSI[8]));
+    lines.push(sb(""));
+    lines.push(sb(" WINDOWS").fg(colors::ANSI[10]));
+    lines.push(sb("  \u{2318}k  Kill session").fg(colors::ANSI[6]));
+    lines.push(sb("  \u{2318}m  Minimize").fg(colors::ANSI[6]));
+    lines.push(sb("  \u{2318}1-4 Focus pane").fg(colors::ANSI[8]));
+    lines.push(sb("  \u{2318}\u{21e7}1-4 Assign pane").fg(colors::ANSI[8]));
+    lines.push(sb("  \u{2318}\u{2190}\u{2192} Move focus").fg(colors::ANSI[8]));
+    lines.push(sb(""));
     lines.push(sb("  \u{2191}\u{2193}  Navigate").fg(colors::ANSI[8]));
     lines.push(sb("  Tab  Switch section").fg(colors::ANSI[8]));
     lines.push(sb("  Enter  View details").fg(colors::ANSI[8]));
-    lines.push(sb("  \u{2318}\u{21a9}  Work ticket").fg(colors::ANSI[8]));
-    lines.push(sb("  \u{2318}1-4 Focus pane").fg(colors::ANSI[8]));
-    lines.push(sb("  \u{2318}\u{2190}\u{2192} Move focus").fg(colors::ANSI[8]));
     lines.push(sb("  \u{2318},  Settings").fg(colors::ANSI[8]));
 
     render_lines(&lines, cols, rows, bg, &mut cells, atlas, font, scale);
