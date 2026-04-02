@@ -146,4 +146,56 @@ impl TicketManager {
     pub fn get_ticket(&self, key: &str) -> Option<&Ticket> {
         self.cached_tickets.iter().find(|t| t.key == key)
     }
+
+    /// Create a new ticket via the first provider that supports creation.
+    /// If `provider_name` is specified, only that provider is tried.
+    pub fn create_ticket(
+        &mut self,
+        title: &str,
+        description: &str,
+        priority: &crate::provider::TicketPriority,
+        provider_name: Option<&str>,
+    ) -> anyhow::Result<Ticket> {
+        let provider = if let Some(name) = provider_name {
+            self.providers.iter()
+                .find(|p| p.name() == name && p.supports_create())
+                .ok_or_else(|| anyhow::anyhow!("Provider '{}' not found or doesn't support creation", name))?
+        } else {
+            self.providers.iter()
+                .find(|p| p.supports_create())
+                .ok_or_else(|| anyhow::anyhow!("No configured provider supports ticket creation"))?
+        };
+
+        let ticket = provider.create_ticket(title, description, priority)?;
+        self.cached_tickets.insert(0, ticket.clone());
+        Ok(ticket)
+    }
+
+    /// Update a ticket's status on its external provider and locally.
+    pub fn update_ticket_status(&mut self, key: &str, status: crate::provider::TicketStatus) -> anyhow::Result<()> {
+        let provider_name = self.cached_tickets.iter()
+            .find(|t| t.key == key)
+            .map(|t| t.provider.clone())
+            .ok_or_else(|| anyhow::anyhow!("Ticket not found: {}", key))?;
+
+        let provider = self.providers.iter()
+            .find(|p| p.name() == provider_name && p.supports_status_update())
+            .ok_or_else(|| anyhow::anyhow!("Provider '{}' doesn't support status updates", provider_name))?;
+
+        provider.update_status(key, &status)?;
+
+        // Update local cache.
+        if let Some(ticket) = self.cached_tickets.iter_mut().find(|t| t.key == key) {
+            ticket.status = status;
+        }
+        Ok(())
+    }
+
+    /// List the names of providers that support ticket creation.
+    pub fn providers_with_create(&self) -> Vec<&str> {
+        self.providers.iter()
+            .filter(|p| p.supports_create())
+            .map(|p| p.name())
+            .collect()
+    }
 }

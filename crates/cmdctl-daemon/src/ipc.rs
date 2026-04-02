@@ -84,6 +84,15 @@ pub enum Request {
     GetTicket { key: String },
     /// Update a ticket's title locally.
     UpdateTicketTitle { key: String, title: String },
+    /// Create a new ticket via an external provider.
+    CreateTicket {
+        title: String,
+        description: String,
+        priority: String,
+        provider: Option<String>,
+    },
+    /// Update a ticket's status on its external provider.
+    UpdateTicketStatus { key: String, status: String },
 
     // -- Skill operations --
 
@@ -122,6 +131,7 @@ pub enum Response {
 
     TicketList(Vec<TicketIpc>),
     TicketDetail(TicketIpc),
+    TicketCreated(TicketIpc),
 
     // -- Skill responses --
 

@@ -73,6 +73,45 @@ struct QuickTerminal {
     visible: bool,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum PortalMode {
+    List,
+    Detail,
+    Create,
+    StatusPick,
+}
+
+struct TicketCreateFields {
+    title: String,
+    title_cursor: usize,
+    description: String,
+    desc_cursor: usize,
+    priority: usize, // 0=Critical, 1=High, 2=Medium, 3=Low, 4=None
+}
+
+impl Default for TicketCreateFields {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            title_cursor: 0,
+            description: String::new(),
+            desc_cursor: 0,
+            priority: 2, // Medium
+        }
+    }
+}
+
+struct TicketPortal {
+    visible: bool,
+    mode: PortalMode,
+    selected: usize,
+    scroll_offset: usize,
+    detail_scroll: usize,
+    create: TicketCreateFields,
+    create_focus: usize, // 0=title, 1=description, 2=priority
+    status_selected: usize,
+}
+
 enum Direction { Up, Down, Left, Right }
 
 struct PaneRect {
@@ -137,6 +176,7 @@ struct AppState {
     sidebar_selected: usize,
     modal: Option<Modal>,
     quick_terminal: Option<QuickTerminal>,
+    ticket_portal: Option<TicketPortal>,
     // Grid dimensions (full window in cells)
     cols: u16,
     rows: u16,
@@ -248,6 +288,16 @@ impl ApplicationHandler for CmdctlApp {
                     }
                 }
 
+                // Ticket portal intercepts all non-Cmd input when visible.
+                if !mods.cmd {
+                    if let Some(tp) = &state.ticket_portal {
+                        if tp.visible {
+                            handle_ticket_portal_input(&event.logical_key, state, &self.font);
+                            return;
+                        }
+                    }
+                }
+
                 // Modal intercepts all non-Cmd input.
                 if state.modal.is_some() && !mods.cmd {
                     handle_modal_input(&event.logical_key, state, &self.font);
@@ -282,12 +332,71 @@ impl ApplicationHandler for CmdctlApp {
                                     if let Some(text) = get_clipboard_text() {
                                         paste_into_modal(state, &text);
                                     }
+                                } else if let Some(tp) = &mut state.ticket_portal {
+                                    if tp.visible && tp.mode == PortalMode::Create && tp.create_focus < 2 {
+                                        if let Some(text) = get_clipboard_text() {
+                                            let (buf, cursor) = match tp.create_focus {
+                                                0 => (&mut tp.create.title, &mut tp.create.title_cursor),
+                                                _ => (&mut tp.create.description, &mut tp.create.desc_cursor),
+                                            };
+                                            for ch in text.chars() {
+                                                if ch == '\n' || ch == '\r' { continue; }
+                                                buf.insert(*cursor, ch);
+                                                *cursor += 1;
+                                            }
+                                        }
+                                    }
                                 } else {
                                     handle_paste(state);
                                 }
                                 return;
                             }
                             _ => {}
+                        }
+                    }
+
+                    // Cmd+Enter in the ticket portal.
+                    if let Key::Named(NamedKey::Enter) = &event.logical_key {
+                        if let Some(tp) = &state.ticket_portal {
+                            if tp.visible {
+                                match tp.mode {
+                                    PortalMode::List | PortalMode::Detail => {
+                                        // Launch agent with selected ticket context.
+                                        if tp.selected < state.tickets.len() {
+                                            let ticket = state.tickets[tp.selected].clone();
+                                            let default_dir = dirs::home_dir()
+                                                .map(|p| p.to_string_lossy().to_string())
+                                                .unwrap_or_else(|| "~".to_string());
+                                            let name = format!("Ticket {} \u{2014} {}",
+                                                ticket.key, ticket.title.chars().take(30).collect::<String>());
+                                            // Hide the portal.
+                                            state.ticket_portal.as_mut().unwrap().visible = false;
+                                            open_ticket_session(state, &name, &default_dir, &ticket.context_prompt, &self.font);
+                                            return;
+                                        }
+                                    }
+                                    PortalMode::Create => {
+                                        // Submit the new ticket.
+                                        let title = tp.create.title.clone();
+                                        let desc = tp.create.description.clone();
+                                        let priority = PORTAL_PRIORITY_LABELS[tp.create.priority];
+                                        if !title.is_empty() {
+                                            match state.client.create_ticket(&title, &desc, priority, None) {
+                                                Ok(new_ticket) => {
+                                                    // Insert into local list and switch to list mode.
+                                                    state.tickets.insert(0, new_ticket);
+                                                    state.ticket_portal.as_mut().unwrap().mode = PortalMode::List;
+                                                    state.ticket_portal.as_mut().unwrap().selected = 0;
+                                                    state.ticket_portal.as_mut().unwrap().scroll_offset = 0;
+                                                }
+                                                Err(e) => tracing::error!("Failed to create ticket: {}", e),
+                                            }
+                                        }
+                                        return;
+                                    }
+                                    _ => {}
+                                }
+                            }
                         }
                     }
 
@@ -870,6 +979,7 @@ fn init_window(event_loop: &ActiveEventLoop, font: &FontInfo) -> Result<AppState
         sidebar_selected: 0,
         modal: None,
         quick_terminal: None,
+        ticket_portal: None,
         cols, rows, scale_factor,
         cursor_position: (0.0, 0.0),
         selection: None,
@@ -1012,6 +1122,14 @@ fn quick_terminal_rect(cols: usize, rows: usize) -> PaneRect {
     PaneRect { col: start_col, row: start_row, cols: overlay_cols, rows: overlay_rows }
 }
 
+fn ticket_portal_rect(cols: usize, rows: usize) -> PaneRect {
+    let overlay_cols = (cols * 85 / 100).max(50).min(cols.saturating_sub(4));
+    let overlay_rows = (rows * 80 / 100).max(20).min(rows.saturating_sub(4));
+    let start_col = cols.saturating_sub(overlay_cols) / 2;
+    let start_row = rows.saturating_sub(overlay_rows) / 2;
+    PaneRect { col: start_col, row: start_row, cols: overlay_cols, rows: overlay_rows }
+}
+
 fn resize_quick_terminal(state: &mut AppState, font: &FontInfo) {
     if let Some(qt) = &state.quick_terminal {
         if qt.visible {
@@ -1140,6 +1258,26 @@ fn handle_global_command(cmd: &str, key: &str, state: &mut AppState, event_loop:
                 edit_cursor: 0,
                 scroll_offset: 0,
             });
+        }
+        "ticket_portal.toggle" => {
+            if let Some(tp) = &mut state.ticket_portal {
+                tp.visible = !tp.visible;
+            } else {
+                // Refresh tickets when first opening the portal.
+                if let Ok(tickets) = state.client.list_tickets() {
+                    state.tickets = tickets;
+                }
+                state.ticket_portal = Some(TicketPortal {
+                    visible: true,
+                    mode: PortalMode::List,
+                    selected: 0,
+                    scroll_offset: 0,
+                    detail_scroll: 0,
+                    create: TicketCreateFields::default(),
+                    create_focus: 0,
+                    status_selected: 0,
+                });
+            }
         }
         "quick_terminal.toggle" => {
             if let Some(qt) = &mut state.quick_terminal {
@@ -1364,6 +1502,198 @@ fn drain_pending_prompts(state: &mut AppState) {
         }
         true // keep waiting
     });
+}
+
+// ---------------------------------------------------------------------------
+// Ticket portal input
+// ---------------------------------------------------------------------------
+
+const PORTAL_STATUS_LABELS: &[&str] = &["Todo", "In Progress", "In Review", "Done", "Blocked"];
+const PORTAL_PRIORITY_LABELS: &[&str] = &["Critical", "High", "Medium", "Low", "None"];
+
+fn handle_ticket_portal_input(key: &Key, state: &mut AppState, _font: &FontInfo) {
+    let portal = match &mut state.ticket_portal { Some(p) if p.visible => p, _ => return };
+
+    match portal.mode {
+        PortalMode::List => {
+            match key {
+                Key::Named(NamedKey::Escape) => {
+                    portal.visible = false;
+                }
+                Key::Named(NamedKey::ArrowUp) => {
+                    if portal.selected > 0 { portal.selected -= 1; }
+                    // Keep selection in view.
+                    if portal.selected < portal.scroll_offset {
+                        portal.scroll_offset = portal.selected;
+                    }
+                }
+                Key::Named(NamedKey::ArrowDown) => {
+                    if portal.selected + 1 < state.tickets.len() { portal.selected += 1; }
+                    // Auto-scroll.
+                    let rows = state.rows as usize;
+                    let list_area = rows.saturating_sub(14); // approximate header + footer
+                    if portal.selected >= portal.scroll_offset + list_area {
+                        portal.scroll_offset = portal.selected.saturating_sub(list_area) + 1;
+                    }
+                }
+                Key::Named(NamedKey::Enter) => {
+                    if portal.selected < state.tickets.len() {
+                        portal.mode = PortalMode::Detail;
+                        portal.detail_scroll = 0;
+                    }
+                }
+                Key::Character(c) => match c.as_str() {
+                    "n" | "N" => {
+                        portal.mode = PortalMode::Create;
+                        portal.create = TicketCreateFields::default();
+                        portal.create_focus = 0;
+                    }
+                    "s" | "S" => {
+                        if portal.selected < state.tickets.len() {
+                            portal.mode = PortalMode::StatusPick;
+                            portal.status_selected = 0;
+                        }
+                    }
+                    "r" => {
+                        if portal.selected < state.tickets.len() {
+                            let ticket = &state.tickets[portal.selected];
+                            let title = ticket.title.clone();
+                            let key = ticket.key.clone();
+                            state.modal = Some(Modal::TicketTitleInput {
+                                ticket_key: key,
+                                input: title.clone(),
+                                cursor_pos: title.len(),
+                            });
+                        }
+                    }
+                    "R" => {
+                        // Force refresh tickets.
+                        if let Ok(tickets) = state.client.refresh_tickets() {
+                            state.tickets = tickets;
+                        }
+                    }
+                    _ => {}
+                }
+                _ => {}
+            }
+        }
+        PortalMode::Detail => {
+            match key {
+                Key::Named(NamedKey::Escape) => {
+                    portal.mode = PortalMode::List;
+                }
+                Key::Named(NamedKey::ArrowUp) => {
+                    if portal.detail_scroll > 0 { portal.detail_scroll -= 1; }
+                }
+                Key::Named(NamedKey::ArrowDown) => {
+                    portal.detail_scroll += 1;
+                }
+                Key::Character(c) => match c.as_str() {
+                    "s" | "S" => {
+                        portal.mode = PortalMode::StatusPick;
+                        portal.status_selected = 0;
+                    }
+                    "r" => {
+                        if portal.selected < state.tickets.len() {
+                            let ticket = &state.tickets[portal.selected];
+                            let title = ticket.title.clone();
+                            let key = ticket.key.clone();
+                            state.modal = Some(Modal::TicketTitleInput {
+                                ticket_key: key,
+                                input: title.clone(),
+                                cursor_pos: title.len(),
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+                _ => {}
+            }
+        }
+        PortalMode::Create => {
+            match key {
+                Key::Named(NamedKey::Escape) => {
+                    portal.mode = PortalMode::List;
+                }
+                Key::Named(NamedKey::Tab) => {
+                    portal.create_focus = (portal.create_focus + 1) % 3;
+                }
+                Key::Named(NamedKey::ArrowLeft) => {
+                    if portal.create_focus == 2 && portal.create.priority > 0 {
+                        portal.create.priority -= 1;
+                    } else if portal.create_focus < 2 {
+                        let cursor = match portal.create_focus {
+                            0 => &mut portal.create.title_cursor,
+                            _ => &mut portal.create.desc_cursor,
+                        };
+                        if *cursor > 0 { *cursor -= 1; }
+                    }
+                }
+                Key::Named(NamedKey::ArrowRight) => {
+                    if portal.create_focus == 2 && portal.create.priority < 4 {
+                        portal.create.priority += 1;
+                    } else if portal.create_focus < 2 {
+                        let (len, cursor) = match portal.create_focus {
+                            0 => (portal.create.title.len(), &mut portal.create.title_cursor),
+                            _ => (portal.create.description.len(), &mut portal.create.desc_cursor),
+                        };
+                        if *cursor < len { *cursor += 1; }
+                    }
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    if portal.create_focus < 2 {
+                        let (input, cursor) = match portal.create_focus {
+                            0 => (&mut portal.create.title, &mut portal.create.title_cursor),
+                            _ => (&mut portal.create.description, &mut portal.create.desc_cursor),
+                        };
+                        if *cursor > 0 { input.remove(*cursor - 1); *cursor -= 1; }
+                    }
+                }
+                Key::Character(c) => {
+                    if portal.create_focus < 2 {
+                        let (input, cursor) = match portal.create_focus {
+                            0 => (&mut portal.create.title, &mut portal.create.title_cursor),
+                            _ => (&mut portal.create.description, &mut portal.create.desc_cursor),
+                        };
+                        for ch in c.chars() { input.insert(*cursor, ch); *cursor += 1; }
+                    }
+                }
+                _ => {}
+            }
+        }
+        PortalMode::StatusPick => {
+            match key {
+                Key::Named(NamedKey::Escape) => {
+                    portal.mode = PortalMode::List;
+                }
+                Key::Named(NamedKey::ArrowUp) => {
+                    if portal.status_selected > 0 { portal.status_selected -= 1; }
+                }
+                Key::Named(NamedKey::ArrowDown) => {
+                    if portal.status_selected < 4 { portal.status_selected += 1; }
+                }
+                Key::Named(NamedKey::Enter) => {
+                    if portal.selected < state.tickets.len() {
+                        let key = state.tickets[portal.selected].key.clone();
+                        let status_label = PORTAL_STATUS_LABELS[portal.status_selected];
+                        match state.client.update_ticket_status(&key, status_label) {
+                            Ok(()) => {
+                                // Update local cache.
+                                if let Some(t) = state.tickets.iter_mut().find(|t| t.key == key) {
+                                    t.status = status_label.to_string();
+                                    let icons = ["o", "*", "~", "x", "!"];
+                                    t.status_icon = icons[portal.status_selected].to_string();
+                                }
+                            }
+                            Err(e) => tracing::error!("Failed to update ticket status: {}", e),
+                        }
+                    }
+                    portal.mode = PortalMode::List;
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2363,6 +2693,196 @@ fn render_frame(state: &mut AppState, font: &FontInfo) {
                     let idx = row * cols + col;
                     if idx < cells.len() {
                         cells[idx] = (col, row, cell.ch, fg, bg, show_cursor);
+                    }
+                }
+            }
+        }
+    }
+
+    // 8. Ticket portal overlay
+    if let Some(tp) = &state.ticket_portal {
+        if tp.visible {
+            // Dim everything behind the overlay.
+            for cell in cells.iter_mut() {
+                cell.3[0] *= 0.3;
+                cell.3[1] *= 0.3;
+                cell.3[2] *= 0.3;
+                cell.4[0] *= 0.3;
+                cell.4[1] *= 0.3;
+                cell.4[2] *= 0.3;
+            }
+
+            let rect = ticket_portal_rect(cols, rows);
+            let portal_bg: [f32; 4] = [0.06, 0.04, 0.06, 1.0];
+            let border_fg = colors::ANSI[6]; // cyan
+
+            // Box-drawing characters.
+            let h = '\u{2500}';
+            let v = '\u{2502}';
+            let tl = '\u{250C}';
+            let tr = '\u{2510}';
+            let bl = '\u{2514}';
+            let br = '\u{2518}';
+            for ch in [h, v, tl, tr, bl, br] {
+                state.renderer.atlas.get_or_insert(ch, font, sf);
+            }
+
+            // Fill overlay background.
+            for r in rect.row..rect.row + rect.rows {
+                for c in rect.col..rect.col + rect.cols {
+                    if r < rows && c < cols {
+                        let idx = r * cols + c;
+                        if idx < cells.len() {
+                            cells[idx] = (c, r, ' ', colors::FG, portal_bg, false);
+                        }
+                    }
+                }
+            }
+
+            let top = rect.row;
+            let bot = rect.row + rect.rows - 1;
+            let left = rect.col;
+            let right = rect.col + rect.cols - 1;
+
+            // Top border.
+            for c in left..=right {
+                if top < rows && c < cols {
+                    let ch = if c == left { tl } else if c == right { tr } else { h };
+                    let idx = top * cols + c;
+                    if idx < cells.len() {
+                        cells[idx] = (c, top, ch, border_fg, portal_bg, false);
+                    }
+                }
+            }
+
+            // Title centered in top border.
+            let title = " Ticket Portal ";
+            let title_start = left + rect.cols.saturating_sub(title.len()) / 2;
+            for (i, ch) in title.chars().enumerate() {
+                let c = title_start + i;
+                if c < right && top < rows && c < cols {
+                    if ch > ' ' { state.renderer.atlas.get_or_insert(ch, font, sf); }
+                    let idx = top * cols + c;
+                    if idx < cells.len() {
+                        cells[idx] = (c, top, ch, colors::ANSI[15], portal_bg, false);
+                    }
+                }
+            }
+
+            // Bottom border.
+            for c in left..=right {
+                if bot < rows && c < cols {
+                    let ch = if c == left { bl } else if c == right { br } else { h };
+                    let idx = bot * cols + c;
+                    if idx < cells.len() {
+                        cells[idx] = (c, bot, ch, border_fg, portal_bg, false);
+                    }
+                }
+            }
+
+            // Hint centered in bottom border.
+            let hint = " \u{2318}W to close ";
+            let hint_start = left + rect.cols.saturating_sub(hint.len()) / 2;
+            for (i, ch) in hint.chars().enumerate() {
+                let c = hint_start + i;
+                if c < right && bot < rows && c < cols {
+                    if ch > ' ' { state.renderer.atlas.get_or_insert(ch, font, sf); }
+                    let idx = bot * cols + c;
+                    if idx < cells.len() {
+                        cells[idx] = (c, bot, ch, colors::ANSI[10], portal_bg, false);
+                    }
+                }
+            }
+
+            // Left and right borders.
+            for r in (top + 1)..bot {
+                if r < rows {
+                    if left < cols {
+                        let idx = r * cols + left;
+                        if idx < cells.len() {
+                            cells[idx] = (left, r, v, border_fg, portal_bg, false);
+                        }
+                    }
+                    if right < cols {
+                        let idx = r * cols + right;
+                        if idx < cells.len() {
+                            cells[idx] = (right, r, v, border_fg, portal_bg, false);
+                        }
+                    }
+                }
+            }
+
+            // Render portal interior content.
+            let inner_col = left + 1;
+            let inner_row = top + 1;
+            let inner_cols = rect.cols.saturating_sub(2);
+            let inner_rows = rect.rows.saturating_sub(2);
+
+            // Build ticket info list for the renderer.
+            let ticket_infos: Vec<ui_renderer::TicketInfo> = state.tickets.iter().map(|t| {
+                ui_renderer::TicketInfo {
+                    key: t.key.clone(),
+                    title: t.title.clone(),
+                    status_icon: t.status_icon.clone(),
+                    priority_icon: t.priority_icon.clone(),
+                    provider: t.provider.clone(),
+                }
+            }).collect();
+
+            let detail_info = if tp.selected < state.tickets.len() {
+                let t = &state.tickets[tp.selected];
+                Some(ui_renderer::TicketDetailInfo {
+                    key: t.key.clone(),
+                    title: t.title.clone(),
+                    description: t.description.clone(),
+                    status: t.status.clone(),
+                    status_icon: t.status_icon.clone(),
+                    priority: t.priority.clone(),
+                    priority_icon: t.priority_icon.clone(),
+                    provider: t.provider.clone(),
+                    url: t.url.clone(),
+                    assignee: t.assignee.clone(),
+                    labels: t.labels.clone(),
+                })
+            } else {
+                None
+            };
+
+            let portal_display_mode = match tp.mode {
+                PortalMode::List => ui_renderer::PortalDisplayMode::List,
+                PortalMode::Detail => ui_renderer::PortalDisplayMode::Detail,
+                PortalMode::Create => ui_renderer::PortalDisplayMode::Create,
+                PortalMode::StatusPick => ui_renderer::PortalDisplayMode::StatusPick,
+            };
+
+            let portal_state = ui_renderer::TicketPortalState {
+                mode: portal_display_mode,
+                tickets: &ticket_infos,
+                selected: tp.selected,
+                scroll_offset: tp.scroll_offset,
+                detail_scroll: tp.detail_scroll,
+                detail: detail_info.as_ref(),
+                create_title: &tp.create.title,
+                create_title_cursor: tp.create.title_cursor,
+                create_description: &tp.create.description,
+                create_desc_cursor: tp.create.desc_cursor,
+                create_priority: tp.create.priority,
+                create_focus: tp.create_focus,
+                status_selected: tp.status_selected,
+            };
+
+            let portal_cells = ui_renderer::build_ticket_portal(
+                inner_cols, inner_rows, &portal_state,
+                &mut state.renderer.atlas, font, sf,
+            );
+
+            for cell in &portal_cells {
+                let c = inner_col + cell.0;
+                let r = inner_row + cell.1;
+                if c < cols && r < rows {
+                    let idx = r * cols + c;
+                    if idx < cells.len() {
+                        cells[idx] = (c, r, cell.2, cell.3, cell.4, cell.5);
                     }
                 }
             }

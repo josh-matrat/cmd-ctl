@@ -1381,3 +1381,339 @@ pub fn build_command_detail(
     render_lines(&lines, cols, rows, colors::BG, &mut cells, atlas, font, scale);
     cells
 }
+
+// ---------------------------------------------------------------------------
+// Ticket Portal overlay
+// ---------------------------------------------------------------------------
+
+/// Portal display mode.
+#[derive(Clone, Copy, PartialEq)]
+pub enum PortalDisplayMode {
+    List,
+    Detail,
+    Create,
+    StatusPick,
+}
+
+/// State passed from the app to render the ticket portal.
+pub struct TicketPortalState<'a> {
+    pub mode: PortalDisplayMode,
+    pub tickets: &'a [TicketInfo],
+    pub selected: usize,
+    pub scroll_offset: usize,
+    pub detail_scroll: usize,
+    pub detail: Option<&'a TicketDetailInfo>,
+    pub create_title: &'a str,
+    pub create_title_cursor: usize,
+    pub create_description: &'a str,
+    pub create_desc_cursor: usize,
+    pub create_priority: usize,
+    pub create_focus: usize,
+    pub status_selected: usize,
+}
+
+const STATUS_OPTIONS: &[&str] = &["Todo", "In Progress", "In Review", "Done", "Blocked"];
+const PRIORITY_OPTIONS: &[&str] = &["Critical", "High", "Medium", "Low", "None"];
+
+/// Build cell data for the ticket portal interior.
+pub fn build_ticket_portal(
+    cols: usize,
+    rows: usize,
+    portal: &TicketPortalState,
+    atlas: &mut GlyphAtlas,
+    font: &FontInfo,
+    scale: f64,
+) -> Vec<(usize, usize, char, [f32; 4], [f32; 4], bool)> {
+    match portal.mode {
+        PortalDisplayMode::List => build_portal_list(cols, rows, portal, atlas, font, scale),
+        PortalDisplayMode::Detail => build_portal_detail(cols, rows, portal, atlas, font, scale),
+        PortalDisplayMode::Create => build_portal_create(cols, rows, portal, atlas, font, scale),
+        PortalDisplayMode::StatusPick => build_portal_status_pick(cols, rows, portal, atlas, font, scale),
+    }
+}
+
+fn portal_cells_init(cols: usize, rows: usize) -> Vec<(usize, usize, char, [f32; 4], [f32; 4], bool)> {
+    let mut cells = Vec::with_capacity(cols * rows);
+    for row in 0..rows {
+        for col in 0..cols {
+            cells.push((col, row, ' ', colors::FG, colors::BG, false));
+        }
+    }
+    cells
+}
+
+fn build_portal_list(
+    cols: usize,
+    rows: usize,
+    portal: &TicketPortalState,
+    atlas: &mut GlyphAtlas,
+    font: &FontInfo,
+    scale: f64,
+) -> Vec<(usize, usize, char, [f32; 4], [f32; 4], bool)> {
+    let bg = colors::BG;
+    let mut cells = portal_cells_init(cols, rows);
+    let mut lines: Vec<StyledLine> = Vec::new();
+
+    push_logo(&mut lines, bg);
+
+    let count = portal.tickets.len();
+    lines.push(StyledLine::new(&format!("  TICKETS ({})", count)).fg(colors::ANSI[3]));
+    lines.push(StyledLine::new(""));
+
+    if portal.tickets.is_empty() {
+        lines.push(StyledLine::new("  No tickets found.").fg(colors::ANSI[10]));
+        lines.push(StyledLine::new("  Configure providers in ~/.cmdctl/providers.toml").fg(colors::ANSI[10]));
+    } else {
+        let key_width = portal.tickets.iter().map(|t| t.key.len()).max().unwrap_or(8).max(8);
+        let status_col_width = 12;
+        let prefix_width = 6 + key_width + 2;
+        let available_title = cols.saturating_sub(prefix_width + status_col_width + 4);
+
+        let list_area = rows.saturating_sub(lines.len() + 8);
+        let visible_start = portal.scroll_offset;
+        let visible_end = (visible_start + list_area).min(count);
+
+        for i in visible_start..visible_end {
+            let t = &portal.tickets[i];
+            let is_selected = i == portal.selected;
+            let title_truncated: String = t.title.chars().take(available_title).collect();
+            let status_label = match t.status_icon.as_str() {
+                "o" => "Todo", "*" => "In Progress", "~" => "In Review",
+                "x" => "Done", "!" => "Blocked", _ => "Unknown",
+            };
+            let line = format!(
+                "  [{}] {} {:<kw$}  {:<tw$}  {}",
+                t.status_icon, t.priority_icon, t.key, title_truncated, status_label,
+                kw = key_width, tw = available_title,
+            );
+            let sel_bg = if is_selected { [0.15, 0.10, 0.10, 1.0] } else { bg };
+            let main_fg = if is_selected { colors::ANSI[15] } else { colors::FG };
+            lines.push(StyledLine::new(&line).fg(main_fg).bg(sel_bg));
+        }
+
+        if count > list_area {
+            let below = count.saturating_sub(visible_end);
+            let mut hint = String::from("  ");
+            if portal.scroll_offset > 0 { hint.push_str(&format!("\u{2191}{} more  ", portal.scroll_offset)); }
+            if below > 0 { hint.push_str(&format!("\u{2193}{} more", below)); }
+            lines.push(StyledLine::new(&hint).fg(colors::ANSI[10]));
+        }
+
+        if portal.selected < count {
+            let t = &portal.tickets[portal.selected];
+            lines.push(StyledLine::new(""));
+            lines.push(StyledLine::new(&format!("  \u{2500}\u{2500}\u{2500} {} \u{2500}\u{2500}\u{2500}", t.key)).fg(colors::ANSI[7]));
+            let pw = cols.saturating_sub(4);
+            let preview: String = t.title.chars().take(pw).collect();
+            lines.push(StyledLine::new(&format!("  {}", preview)).fg(colors::ANSI[15]));
+            let sl = match t.status_icon.as_str() {
+                "o" => "Todo", "*" => "In Progress", "~" => "In Review",
+                "x" => "Done", "!" => "Blocked", _ => "Unknown",
+            };
+            lines.push(StyledLine::new(&format!("  {} \u{2022} {}", t.provider, sl)).fg(colors::ANSI[10]));
+        }
+    }
+
+    let footer_start = rows.saturating_sub(5);
+    while lines.len() < footer_start { lines.push(StyledLine::new("")); }
+    lines.push(StyledLine::new(""));
+    lines.push(StyledLine::new("  \u{2191}\u{2193} Navigate   Enter Detail   n New ticket   s Change status").fg(colors::ANSI[10]));
+    lines.push(StyledLine::new("  r  Rename      \u{2318}\u{21a9} Agent    R Refresh        \u{2318}W/Esc Close").fg(colors::ANSI[10]));
+
+    render_lines(&lines, cols, rows, bg, &mut cells, atlas, font, scale);
+    cells
+}
+
+fn build_portal_detail(
+    cols: usize,
+    rows: usize,
+    portal: &TicketPortalState,
+    atlas: &mut GlyphAtlas,
+    font: &FontInfo,
+    scale: f64,
+) -> Vec<(usize, usize, char, [f32; 4], [f32; 4], bool)> {
+    let bg = colors::BG;
+    let mut cells = portal_cells_init(cols, rows);
+    let mut lines: Vec<StyledLine> = Vec::new();
+    push_logo(&mut lines, bg);
+
+    let detail = match portal.detail {
+        Some(d) => d,
+        None => {
+            lines.push(StyledLine::new("  No ticket selected.").fg(colors::ANSI[10]));
+            render_lines(&lines, cols, rows, bg, &mut cells, atlas, font, scale);
+            return cells;
+        }
+    };
+
+    let wrap_width = cols.saturating_sub(4);
+    let header = format!("  {} {} {}", detail.status_icon, detail.priority_icon, detail.key);
+    lines.push(StyledLine::new(&header).fg(colors::ANSI[3]));
+    lines.push(StyledLine::new(""));
+
+    for tl in wrap_text(&detail.title, wrap_width) {
+        lines.push(StyledLine::new(&format!("  {}", tl)).fg(colors::ANSI[15]));
+    }
+    lines.push(StyledLine::new(""));
+
+    let status_fg = match detail.status_icon.as_str() {
+        "!" => colors::ANSI[1], "*" => colors::ANSI[3],
+        "~" => colors::ANSI[6], "x" => colors::ANSI[10], _ => colors::FG,
+    };
+    lines.push(StyledLine::new(&format!("  Status:    {}", detail.status)).fg(status_fg));
+    let priority_fg = match detail.priority_icon.as_str() {
+        "!!" => colors::ANSI[1], "!" => colors::ANSI[3], _ => colors::FG,
+    };
+    lines.push(StyledLine::new(&format!("  Priority:  {}", detail.priority)).fg(priority_fg));
+    lines.push(StyledLine::new(&format!("  Provider:  {}", detail.provider)).fg(colors::ANSI[7]));
+    if let Some(assignee) = &detail.assignee {
+        lines.push(StyledLine::new(&format!("  Assignee:  {}", assignee)).fg(colors::ANSI[7]));
+    }
+    if !detail.labels.is_empty() {
+        lines.push(StyledLine::new(&format!("  Labels:    {}", detail.labels.join(", "))).fg(colors::ANSI[6]));
+    }
+    if !detail.url.is_empty() {
+        let url_display: String = detail.url.chars().take(wrap_width).collect();
+        lines.push(StyledLine::new(&format!("  URL:       {}", url_display)).fg(colors::ANSI[4]));
+    }
+    lines.push(StyledLine::new(""));
+
+    if !detail.description.is_empty() {
+        lines.push(StyledLine::new("  Description:").fg(colors::ANSI[7]));
+        lines.push(StyledLine::new(""));
+        let desc_lines = wrap_text(&detail.description, wrap_width);
+        let available = rows.saturating_sub(lines.len() + 6);
+        for dl in desc_lines.iter().skip(portal.detail_scroll).take(available) {
+            lines.push(StyledLine::new(&format!("  {}", dl)).fg(colors::FG));
+        }
+        let remaining = desc_lines.len().saturating_sub(portal.detail_scroll + available);
+        if remaining > 0 {
+            lines.push(StyledLine::new(&format!("  ... ({} more lines)", remaining)).fg(colors::ANSI[10]));
+        }
+    }
+
+    let footer_start = rows.saturating_sub(5);
+    while lines.len() < footer_start { lines.push(StyledLine::new("")); }
+    lines.push(StyledLine::new(""));
+    lines.push(StyledLine::new("  Esc Back   s Change status   r Rename   \u{2318}\u{21a9} Start agent").fg(colors::ANSI[10]));
+    lines.push(StyledLine::new("  \u{2191}\u{2193}  Scroll description").fg(colors::ANSI[10]));
+
+    render_lines(&lines, cols, rows, bg, &mut cells, atlas, font, scale);
+    cells
+}
+
+fn build_portal_create(
+    cols: usize,
+    rows: usize,
+    portal: &TicketPortalState,
+    atlas: &mut GlyphAtlas,
+    font: &FontInfo,
+    scale: f64,
+) -> Vec<(usize, usize, char, [f32; 4], [f32; 4], bool)> {
+    let bg = colors::BG;
+    let mut cells = portal_cells_init(cols, rows);
+    let mut lines: Vec<StyledLine> = Vec::new();
+    push_logo(&mut lines, bg);
+
+    lines.push(StyledLine::new("  CREATE NEW TICKET").fg(colors::ANSI[3]));
+    lines.push(StyledLine::new(""));
+
+    let field_width = cols.saturating_sub(18);
+    let title_label = "  Title:       ";
+    let title_fg = if portal.create_focus == 0 { colors::ANSI[15] } else { colors::FG };
+    let title_bg = if portal.create_focus == 0 { [0.15, 0.10, 0.10, 1.0] } else { bg };
+    let title_display: String = portal.create_title.chars().take(field_width).collect();
+    let title_line = format!("{}{}", title_label,
+        if title_display.is_empty() && portal.create_focus != 0 { "(empty)".to_string() } else { title_display });
+    lines.push(StyledLine::new(&title_line).fg(title_fg).bg(title_bg));
+    let title_line_idx = lines.len() - 1;
+    lines.push(StyledLine::new(""));
+
+    let desc_label = "  Description: ";
+    let desc_fg = if portal.create_focus == 1 { colors::ANSI[15] } else { colors::FG };
+    let desc_bg = if portal.create_focus == 1 { [0.15, 0.10, 0.10, 1.0] } else { bg };
+    let desc_display: String = portal.create_description.chars().take(field_width).collect();
+    let desc_line = format!("{}{}", desc_label,
+        if desc_display.is_empty() && portal.create_focus != 1 { "(empty)".to_string() } else { desc_display });
+    lines.push(StyledLine::new(&desc_line).fg(desc_fg).bg(desc_bg));
+    let desc_line_idx = lines.len() - 1;
+    lines.push(StyledLine::new(""));
+
+    let prio_fg = if portal.create_focus == 2 { colors::ANSI[15] } else { colors::FG };
+    let prio_bg = if portal.create_focus == 2 { [0.15, 0.10, 0.10, 1.0] } else { bg };
+    let prio_name = PRIORITY_OPTIONS.get(portal.create_priority).unwrap_or(&"Medium");
+    lines.push(StyledLine::new(&format!("  Priority:    {} (\u{2190}\u{2192} to change)", prio_name))
+        .fg(prio_fg).bg(prio_bg));
+
+    let footer_start = rows.saturating_sub(5);
+    while lines.len() < footer_start { lines.push(StyledLine::new("")); }
+    lines.push(StyledLine::new(""));
+    lines.push(StyledLine::new("  Tab Next field   \u{2318}\u{21a9} Create ticket   Esc Cancel").fg(colors::ANSI[10]));
+    lines.push(StyledLine::new("  \u{2190}\u{2192}  Cycle priority (when focused)").fg(colors::ANSI[10]));
+
+    render_lines(&lines, cols, rows, bg, &mut cells, atlas, font, scale);
+
+    // Place cursor in the active text field.
+    if portal.create_focus == 0 && title_line_idx < rows {
+        let col = title_label.len() + portal.create_title_cursor.min(field_width);
+        if col < cols {
+            let idx = title_line_idx * cols + col;
+            if idx < cells.len() {
+                cells[idx] = (col, title_line_idx, cells[idx].2, colors::ANSI[15], colors::CURSOR, true);
+            }
+        }
+    } else if portal.create_focus == 1 && desc_line_idx < rows {
+        let col = desc_label.len() + portal.create_desc_cursor.min(field_width);
+        if col < cols {
+            let idx = desc_line_idx * cols + col;
+            if idx < cells.len() {
+                cells[idx] = (col, desc_line_idx, cells[idx].2, colors::ANSI[15], colors::CURSOR, true);
+            }
+        }
+    }
+
+    cells
+}
+
+fn build_portal_status_pick(
+    cols: usize,
+    rows: usize,
+    portal: &TicketPortalState,
+    atlas: &mut GlyphAtlas,
+    font: &FontInfo,
+    scale: f64,
+) -> Vec<(usize, usize, char, [f32; 4], [f32; 4], bool)> {
+    let bg = colors::BG;
+    let mut cells = portal_cells_init(cols, rows);
+    let mut lines: Vec<StyledLine> = Vec::new();
+    push_logo(&mut lines, bg);
+
+    if portal.selected < portal.tickets.len() {
+        let t = &portal.tickets[portal.selected];
+        lines.push(StyledLine::new(&format!("  UPDATE STATUS: {}", t.key)).fg(colors::ANSI[3]));
+        lines.push(StyledLine::new(&format!("  {}", t.title)).fg(colors::ANSI[15]));
+    } else {
+        lines.push(StyledLine::new("  UPDATE STATUS").fg(colors::ANSI[3]));
+    }
+    lines.push(StyledLine::new(""));
+
+    let status_icons = ["o", "*", "~", "x", "!"];
+    let status_fgs = [colors::FG, colors::ANSI[3], colors::ANSI[6], colors::ANSI[10], colors::ANSI[1]];
+
+    for (i, (&label, &icon)) in STATUS_OPTIONS.iter().zip(status_icons.iter()).enumerate() {
+        let is_sel = i == portal.status_selected;
+        let marker = if is_sel { "\u{25b6}" } else { " " };
+        let sel_bg = if is_sel { [0.15, 0.10, 0.10, 1.0] } else { bg };
+        let fg = status_fgs.get(i).copied().unwrap_or(colors::FG);
+        lines.push(StyledLine::new(&format!("  {} [{}] {}", marker, icon, label)).fg(fg).bg(sel_bg));
+    }
+
+    let footer_start = rows.saturating_sub(5);
+    while lines.len() < footer_start { lines.push(StyledLine::new("")); }
+    lines.push(StyledLine::new(""));
+    lines.push(StyledLine::new("  \u{2191}\u{2193} Navigate   Enter Confirm   Esc Cancel").fg(colors::ANSI[10]));
+    lines.push(StyledLine::new("  Status will be updated on the external provider.").fg(colors::ANSI[10]));
+
+    render_lines(&lines, cols, rows, bg, &mut cells, atlas, font, scale);
+    cells
+}

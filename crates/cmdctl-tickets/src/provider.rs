@@ -117,4 +117,20 @@ pub trait TicketProvider: Send + Sync {
     fn ticket_url(&self, ticket: &Ticket) -> String {
         ticket.url.clone()
     }
+
+    /// Create a new ticket on the external provider. Returns the created ticket.
+    fn create_ticket(&self, _title: &str, _description: &str, _priority: &TicketPriority) -> anyhow::Result<Ticket> {
+        anyhow::bail!("{} does not support ticket creation", self.name())
+    }
+
+    /// Update a ticket's status on the external provider.
+    fn update_status(&self, _key: &str, _status: &TicketStatus) -> anyhow::Result<()> {
+        anyhow::bail!("{} does not support status updates", self.name())
+    }
+
+    /// Whether this provider supports creating tickets.
+    fn supports_create(&self) -> bool { false }
+
+    /// Whether this provider supports status updates.
+    fn supports_status_update(&self) -> bool { false }
 }

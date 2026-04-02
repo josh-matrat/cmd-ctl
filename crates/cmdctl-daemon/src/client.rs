@@ -138,6 +138,30 @@ impl DaemonClient {
         }
     }
 
+    pub fn create_ticket(&mut self, title: &str, description: &str, priority: &str, provider: Option<&str>) -> Result<TicketIpc> {
+        match self.request(Request::CreateTicket {
+            title: title.to_string(),
+            description: description.to_string(),
+            priority: priority.to_string(),
+            provider: provider.map(|s| s.to_string()),
+        })? {
+            Response::TicketCreated(t) => Ok(t),
+            Response::Error(e) => anyhow::bail!("{}", e),
+            _ => anyhow::bail!("Unexpected response"),
+        }
+    }
+
+    pub fn update_ticket_status(&mut self, key: &str, status: &str) -> Result<()> {
+        match self.request(Request::UpdateTicketStatus {
+            key: key.to_string(),
+            status: status.to_string(),
+        })? {
+            Response::Ok => Ok(()),
+            Response::Error(e) => anyhow::bail!("{}", e),
+            _ => anyhow::bail!("Unexpected response"),
+        }
+    }
+
     // -- Knowledge operations --
 
     pub fn add_knowledge(&mut self, title: &str, content: &str, scope: &str, tags: &str) -> Result<String> {

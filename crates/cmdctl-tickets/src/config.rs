@@ -32,6 +32,10 @@ pub struct JiraConfig {
     pub jql: Option<String>,
     /// Max results to fetch.
     pub max_results: Option<u32>,
+    /// Project key for creating new tickets (e.g., "PROJ"). Required for ticket creation.
+    pub project_key: Option<String>,
+    /// Default issue type for new tickets. Defaults to "Task".
+    pub issue_type: Option<String>,
 }
 
 impl std::fmt::Debug for JiraConfig {
@@ -42,6 +46,8 @@ impl std::fmt::Debug for JiraConfig {
             .field("api_token", &"***")
             .field("jql", &self.jql)
             .field("max_results", &self.max_results)
+            .field("project_key", &self.project_key)
+            .field("issue_type", &self.issue_type)
             .finish()
     }
 }
@@ -176,6 +182,8 @@ pub fn write_example_config() -> Result<PathBuf> {
 # api_token = "your-api-token"
 # jql = "assignee = currentUser() AND status != Done ORDER BY priority DESC"
 # max_results = 50
+# project_key = "PROJ"
+# issue_type = "Task"
 
 # [notion]
 # api_token = "secret_..."

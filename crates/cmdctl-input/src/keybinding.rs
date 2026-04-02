@@ -52,7 +52,7 @@ impl KeybindingManager {
         );
         bindings.insert(
             KeyBinding { modifiers: Modifiers::CMD, key: "w".into() },
-            "session.close",
+            "ticket_portal.toggle",
         );
         bindings.insert(
             KeyBinding { modifiers: Modifiers::CMD, key: "k".into() },

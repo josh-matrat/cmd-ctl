@@ -374,6 +374,33 @@ fn process_request(
             ticket_manager.lock().update_title(&key, title);
             Response::Ok
         }
+        Request::CreateTicket { title, description, priority, provider } => {
+            let prio = match priority.to_lowercase().as_str() {
+                "critical" => cmdctl_tickets::provider::TicketPriority::Critical,
+                "high" => cmdctl_tickets::provider::TicketPriority::High,
+                "medium" => cmdctl_tickets::provider::TicketPriority::Medium,
+                "low" => cmdctl_tickets::provider::TicketPriority::Low,
+                _ => cmdctl_tickets::provider::TicketPriority::None,
+            };
+            match ticket_manager.lock().create_ticket(&title, &description, &prio, provider.as_deref()) {
+                Ok(t) => Response::TicketCreated(ticket_to_ipc(&t)),
+                Err(e) => Response::Error(format!("{}", e)),
+            }
+        }
+        Request::UpdateTicketStatus { key, status } => {
+            let st = match status.to_lowercase().as_str() {
+                "todo" => cmdctl_tickets::provider::TicketStatus::Todo,
+                "in progress" => cmdctl_tickets::provider::TicketStatus::InProgress,
+                "in review" => cmdctl_tickets::provider::TicketStatus::InReview,
+                "done" => cmdctl_tickets::provider::TicketStatus::Done,
+                "blocked" => cmdctl_tickets::provider::TicketStatus::Blocked,
+                other => cmdctl_tickets::provider::TicketStatus::Custom(other.to_string()),
+            };
+            match ticket_manager.lock().update_ticket_status(&key, st) {
+                Ok(()) => Response::Ok,
+                Err(e) => Response::Error(format!("{}", e)),
+            }
+        }
 
         // -- Knowledge operations --
 

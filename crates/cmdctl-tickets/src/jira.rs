@@ -188,6 +188,146 @@ impl TicketProvider for JiraProvider {
         let json = self.fetch_raw()?;
         self.parse_response(&json)
     }
+
+    fn supports_create(&self) -> bool {
+        self.config.project_key.is_some()
+    }
+
+    fn supports_status_update(&self) -> bool {
+        true
+    }
+
+    fn create_ticket(&self, title: &str, description: &str, priority: &TicketPriority) -> Result<Ticket> {
+        let project_key = self.config.project_key.as_deref()
+            .context("Jira project_key not configured — add project_key to [jira] in providers.toml")?;
+        let issue_type = self.config.issue_type.as_deref().unwrap_or("Task");
+
+        let priority_name = match priority {
+            TicketPriority::Critical => "Highest",
+            TicketPriority::High => "High",
+            TicketPriority::Medium => "Medium",
+            TicketPriority::Low => "Low",
+            TicketPriority::None => "Medium",
+        };
+
+        // Escape JSON strings to prevent injection.
+        let title_escaped = json_escape(title);
+        let desc_escaped = json_escape(description);
+        let project_escaped = json_escape(project_key);
+        let type_escaped = json_escape(issue_type);
+        let priority_escaped = json_escape(priority_name);
+
+        let body = format!(
+            r#"{{"fields":{{"project":{{"key":"{project_escaped}"}},"summary":"{title_escaped}","description":{{"type":"doc","version":1,"content":[{{"type":"paragraph","content":[{{"type":"text","text":"{desc_escaped}"}}]}}]}},"issuetype":{{"name":"{type_escaped}"}},"priority":{{"name":"{priority_escaped}"}}}}}}"#
+        );
+
+        let url = format!(
+            "{}/rest/api/3/issue",
+            self.config.url.trim_end_matches('/')
+        );
+
+        let auth = format!("{}:{}", self.config.email, self.config.api_token);
+        let auth_header = format!("Basic {}", base64_encode(auth.as_bytes()));
+
+        let mut child = std::process::Command::new("curl")
+            .args(["-sS", "-X", "POST", "--config", "-",
+                   "-H", "Content-Type: application/json",
+                   "-d", &body, &url])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("Failed to execute curl for Jira create")?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = write!(stdin, "header = \"Authorization: {}\"\n", auth_header);
+        }
+
+        let output = child.wait_with_output()
+            .context("Failed to wait for curl process")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Jira create failed: {}", stderr);
+        }
+
+        let response = String::from_utf8_lossy(&output.stdout);
+        let key = extract_string_field(&response, "key")
+            .context("Failed to parse created ticket key from Jira response")?;
+
+        let ticket_url = format!("{}/browse/{}", self.config.url.trim_end_matches('/'), key);
+
+        Ok(Ticket {
+            key,
+            title: title.to_string(),
+            description: description.to_string(),
+            status: TicketStatus::Todo,
+            priority: *priority,
+            provider: "jira".to_string(),
+            url: ticket_url,
+            assignee: None,
+            labels: Vec::new(),
+        })
+    }
+
+    fn update_status(&self, key: &str, status: &TicketStatus) -> Result<()> {
+        let target_name = status.label().to_lowercase();
+
+        // 1. Fetch available transitions for this ticket.
+        let transitions_url = format!(
+            "{}/rest/api/3/issue/{}/transitions",
+            self.config.url.trim_end_matches('/'),
+            urlencoding(key),
+        );
+
+        let auth = format!("{}:{}", self.config.email, self.config.api_token);
+        let auth_header = format!("Basic {}", base64_encode(auth.as_bytes()));
+
+        let mut child = std::process::Command::new("curl")
+            .args(["-sS", "--config", "-",
+                   "-H", "Content-Type: application/json", &transitions_url])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("Failed to fetch Jira transitions")?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = write!(stdin, "header = \"Authorization: {}\"\n", auth_header);
+        }
+
+        let output = child.wait_with_output()?;
+        let json = String::from_utf8_lossy(&output.stdout);
+
+        // 2. Find the transition ID matching the target status.
+        let transition_id = find_transition_id(&json, &target_name)
+            .with_context(|| format!("No Jira transition found for status '{}' on {}", status.label(), key))?;
+
+        // 3. Execute the transition.
+        let body = format!(r#"{{"transition":{{"id":"{}"}}}}"#, json_escape(&transition_id));
+
+        let mut child = std::process::Command::new("curl")
+            .args(["-sS", "-X", "POST", "--config", "-",
+                   "-H", "Content-Type: application/json",
+                   "-d", &body, &transitions_url])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("Failed to execute Jira transition")?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = write!(stdin, "header = \"Authorization: {}\"\n", auth_header);
+        }
+
+        let output = child.wait_with_output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Jira transition failed: {}", stderr);
+        }
+
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -231,6 +371,66 @@ fn base64_encode(data: &[u8]) -> String {
         }
     }
     result
+}
+
+/// Escape a string for safe inclusion in a JSON string literal.
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c < '\x20' => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Find a Jira transition ID whose name contains the target status (case-insensitive).
+fn find_transition_id(json: &str, target_lower: &str) -> Option<String> {
+    // The response has: "transitions": [{"id": "31", "name": "Done", ...}, ...]
+    // We parse it minimally by scanning for transition objects.
+    let transitions_start = json.find("\"transitions\"")?;
+    let section = &json[transitions_start..];
+    let arr_start = section.find('[')?;
+    let arr_section = &section[arr_start..];
+
+    let mut depth = 0;
+    let mut obj_start = None;
+    let chars: Vec<char> = arr_section.chars().collect();
+
+    for (i, &ch) in chars.iter().enumerate() {
+        match ch {
+            '{' => {
+                if depth == 1 && obj_start.is_none() {
+                    obj_start = Some(i);
+                }
+                depth += 1;
+            }
+            '}' => {
+                depth -= 1;
+                if depth == 1 {
+                    if let Some(start) = obj_start.take() {
+                        let obj: String = chars[start..=i].iter().collect();
+                        if let Some(name) = extract_string_field(&obj, "name") {
+                            if name.to_lowercase().contains(target_lower) {
+                                return extract_string_field(&obj, "id");
+                            }
+                        }
+                    }
+                }
+                if depth == 0 { break; }
+            }
+            '[' if depth == 0 => { depth = 1; }
+            ']' if depth == 1 => { break; }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Extract a string value for a top-level key like `"key": "PROJ-123"`.
