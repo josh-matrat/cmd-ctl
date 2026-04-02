@@ -106,11 +106,19 @@ fn render_lines(
 // Sidebar (VS Code-style session explorer)
 // ---------------------------------------------------------------------------
 
+/// Skill info for sidebar display.
+#[derive(Clone)]
+pub struct SkillInfo {
+    pub name: String,
+    pub plugin: String,
+}
+
 /// Which section of the sidebar is focused.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SidebarSection {
     Sessions,
     Tickets,
+    Skills,
 }
 
 /// Build cell data for the sidebar panel.
@@ -123,6 +131,8 @@ pub fn build_sidebar(
     focused: bool,
     tickets: &[TicketInfo],
     ticket_selected: usize,
+    skills: &[SkillInfo],
+    skill_selected: usize,
     sidebar_section: SidebarSection,
     atlas: &mut GlyphAtlas,
     font: &FontInfo,
@@ -244,6 +254,46 @@ pub fn build_sidebar(
         }
         if tickets.len() > max_tickets {
             let more = tickets.len() - max_tickets;
+            lines.push(sb(&format!("  +{} more", more)).fg(colors::ANSI[10]));
+        }
+    }
+
+    // -- Skills section --
+    lines.push(sb(""));
+    let skills_hdr_fg = if focused && sidebar_section == SidebarSection::Skills {
+        colors::ANSI[3]
+    } else {
+        colors::ANSI[10]
+    };
+    lines.push(sb(" SKILLS").fg(skills_hdr_fg));
+
+    if skills.is_empty() {
+        lines.push(sb("  (none)").fg(colors::ANSI[10]));
+    } else {
+        let max_skills = rows.saturating_sub(lines.len() + 12);
+        for (i, skill) in skills.iter().take(max_skills).enumerate() {
+            let is_selected = i == skill_selected && focused && sidebar_section == SidebarSection::Skills;
+
+            let max_name = cols.saturating_sub(4);
+            let name: String = skill.name.chars().take(max_name).collect();
+            let line = format!(" / {}", name);
+
+            let fg = if is_selected {
+                colors::ANSI[15]
+            } else {
+                colors::ANSI[6] // cyan for skills
+            };
+
+            let row_bg = if is_selected {
+                [0.18, 0.08, 0.03, 0.85]
+            } else {
+                bg
+            };
+
+            lines.push(StyledLine::new(&line).fg(fg).bg(row_bg));
+        }
+        if skills.len() > max_skills {
+            let more = skills.len() - max_skills;
             lines.push(sb(&format!("  +{} more", more)).fg(colors::ANSI[10]));
         }
     }
@@ -983,4 +1033,150 @@ pub fn build_ticket_detail(
 
     render_lines(&lines, cols, rows, colors::BG, &mut cells, atlas, font, scale);
     cells
+}
+
+// ---------------------------------------------------------------------------
+// Modal: skill detail
+// ---------------------------------------------------------------------------
+
+/// Full skill info for the detail popup.
+#[derive(Clone)]
+pub struct SkillDetailInfo {
+    pub name: String,
+    pub description: String,
+    pub plugin: String,
+    pub content: String,
+}
+
+/// Build cell data for the skill detail popup.
+pub fn build_skill_detail(
+    cols: usize,
+    rows: usize,
+    skill: &SkillDetailInfo,
+    scroll_offset: usize,
+    atlas: &mut GlyphAtlas,
+    font: &FontInfo,
+    scale: f64,
+) -> Vec<(usize, usize, char, [f32; 4], [f32; 4], bool)> {
+    let mut cells = Vec::new();
+
+    for row in 0..rows {
+        for col in 0..cols {
+            cells.push((col, row, ' ', colors::FG, colors::BG, false));
+        }
+    }
+
+    let mut lines: Vec<StyledLine> = Vec::new();
+
+    lines.push(StyledLine::new(""));
+    lines.push(StyledLine::new("C M D C T L")
+        .fg(colors::ANSI[3])
+        .centered());
+    lines.push(StyledLine::new(""));
+
+    // Skill header
+    let header = format!("  / {}", skill.name);
+    lines.push(StyledLine::new(&header).fg(colors::ANSI[6]));
+    lines.push(StyledLine::new(""));
+
+    // Plugin name
+    lines.push(StyledLine::new(&format!("  Plugin:  {}", skill.plugin)).fg(colors::ANSI[7]));
+    lines.push(StyledLine::new(""));
+
+    // Description (if present)
+    let indent = 2;
+    let wrap_width = cols.saturating_sub(indent + 2);
+    if !skill.description.is_empty() {
+        lines.push(StyledLine::new("  Description:").fg(colors::ANSI[7]));
+        let desc_lines = wrap_text(&skill.description, wrap_width);
+        for dl in &desc_lines {
+            lines.push(StyledLine::new(&format!("  {}", dl)).fg(colors::FG));
+        }
+        lines.push(StyledLine::new(""));
+    }
+
+    // Separator
+    let sep: String = "\u{2500}".repeat(cols.saturating_sub(4));
+    lines.push(StyledLine::new(&format!("  {}", sep)).fg(colors::ANSI[8]));
+    lines.push(StyledLine::new(""));
+
+    // Render the markdown content, stripping frontmatter
+    let body = strip_frontmatter(&skill.content);
+    let footer_rows = 4;
+    let available = rows.saturating_sub(lines.len() + footer_rows);
+
+    // Wrap all body lines
+    let mut body_lines: Vec<StyledLine> = Vec::new();
+    for raw_line in body.lines() {
+        if raw_line.is_empty() {
+            body_lines.push(StyledLine::new(""));
+        } else {
+            // Detect markdown headings
+            let (text, fg) = if raw_line.starts_with("###") {
+                (raw_line.trim_start_matches('#').trim(), colors::ANSI[6])
+            } else if raw_line.starts_with("##") {
+                (raw_line.trim_start_matches('#').trim(), colors::ANSI[3])
+            } else if raw_line.starts_with('#') {
+                (raw_line.trim_start_matches('#').trim(), colors::ANSI[15])
+            } else if raw_line.starts_with("```") {
+                (raw_line, colors::ANSI[10])
+            } else if raw_line.starts_with("- ") || raw_line.starts_with("* ") {
+                (raw_line, colors::FG)
+            } else {
+                (raw_line, colors::FG)
+            };
+
+            let wrapped = wrap_text(text, wrap_width);
+            for wl in wrapped {
+                body_lines.push(StyledLine::new(&format!("  {}", wl)).fg(fg));
+            }
+        }
+    }
+
+    // Apply scroll offset and limit to available space
+    let total_body = body_lines.len();
+    let visible_body: Vec<StyledLine> = body_lines
+        .into_iter()
+        .skip(scroll_offset)
+        .take(available)
+        .collect();
+
+    for bl in visible_body {
+        lines.push(bl);
+    }
+
+    // Show scroll indicator if content overflows
+    if total_body > available {
+        let remaining = total_body.saturating_sub(scroll_offset + available);
+        if remaining > 0 {
+            lines.push(StyledLine::new(&format!("  ... ({} more lines, \u{2191}\u{2193} to scroll)", remaining))
+                .fg(colors::ANSI[10]));
+        }
+    }
+
+    // Footer hints
+    let footer_start = rows.saturating_sub(4);
+    while lines.len() < footer_start {
+        lines.push(StyledLine::new(""));
+    }
+    lines.push(StyledLine::new(""));
+    lines.push(StyledLine::new("  Escape/Enter   Close").fg(colors::ANSI[10]));
+    lines.push(StyledLine::new("  \u{2191}\u{2193}           Scroll").fg(colors::ANSI[10]));
+
+    render_lines(&lines, cols, rows, colors::BG, &mut cells, atlas, font, scale);
+    cells
+}
+
+/// Strip YAML frontmatter (--- ... ---) from a SKILL.md body.
+fn strip_frontmatter(content: &str) -> &str {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") {
+        return content;
+    }
+    if let Some(end) = trimmed[3..].find("---") {
+        let after = &trimmed[3 + end + 3..];
+        after.trim_start_matches('\n').trim_start_matches('\r')
+    } else {
+        content
+    }
 }

@@ -84,6 +84,13 @@ pub enum Request {
     GetTicket { key: String },
     /// Update a ticket's title locally.
     UpdateTicketTitle { key: String, title: String },
+
+    // -- Skill operations --
+
+    /// List all available Claude skills.
+    ListSkills,
+    /// Get the full content of a skill by name.
+    GetSkill { name: String },
 }
 
 /// Messages sent from the daemon to a client.
@@ -108,6 +115,11 @@ pub enum Response {
 
     TicketList(Vec<TicketIpc>),
     TicketDetail(TicketIpc),
+
+    // -- Skill responses --
+
+    SkillList(Vec<SkillIpc>),
+    SkillDetail(SkillIpc),
 }
 
 /// Session metadata for listing.
@@ -184,6 +196,15 @@ pub struct TicketIpc {
     pub labels: Vec<String>,
     /// Pre-built context prompt for feeding to a Claude session.
     pub context_prompt: String,
+}
+
+/// Skill entry as exposed over IPC.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillIpc {
+    pub name: String,
+    pub description: String,
+    pub plugin: String,
+    pub content: String,
 }
 
 /// Read a length-prefixed bincode message from a stream.

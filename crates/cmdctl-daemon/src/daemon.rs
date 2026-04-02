@@ -15,7 +15,7 @@ use parking_lot::Mutex;
 use cmdctl_knowledge::store::KnowledgeStore;
 use cmdctl_tickets::manager::TicketManager;
 use crate::db::SessionDb;
-use crate::ipc::{self, KnowledgeEntryIpc, Request, Response, SessionSummaryIpc, TicketIpc};
+use crate::ipc::{self, KnowledgeEntryIpc, Request, Response, SessionSummaryIpc, SkillIpc, TicketIpc};
 use crate::session_manager::SessionManager;
 
 const SOCKET_NAME: &str = "cmdctl.sock";
@@ -469,5 +469,95 @@ fn process_request(
                 Err(e) => Response::Error(e.to_string()),
             }
         }
+
+        // -- Skill operations --
+
+        Request::ListSkills => {
+            Response::SkillList(scan_skills())
+        }
+        Request::GetSkill { name } => {
+            let skills = scan_skills();
+            match skills.into_iter().find(|s| s.name == name) {
+                Some(s) => Response::SkillDetail(s),
+                None => Response::Error(format!("Skill not found: {}", name)),
+            }
+        }
+    }
+}
+
+/// Scan ~/.claude/plugins/ for SKILL.md files and parse their metadata.
+fn scan_skills() -> Vec<SkillIpc> {
+    let plugins_dir = match dirs::home_dir() {
+        Some(h) => h.join(".claude").join("plugins"),
+        None => return Vec::new(),
+    };
+
+    let mut skills = Vec::new();
+
+    // Walk marketplaces/*/{ plugins, external_plugins }/*/skills/*/SKILL.md
+    let marketplaces = plugins_dir.join("marketplaces");
+    if let Ok(marketplace_entries) = fs::read_dir(&marketplaces) {
+        for mp_entry in marketplace_entries.flatten() {
+            for subdir in &["plugins", "external_plugins"] {
+                let plugins_path = mp_entry.path().join(subdir);
+                if !plugins_path.is_dir() { continue; }
+
+                if let Ok(plugin_entries) = fs::read_dir(&plugins_path) {
+                    for plugin_entry in plugin_entries.flatten() {
+                        let plugin_name = plugin_entry.file_name().to_string_lossy().to_string();
+                        let skills_dir = plugin_entry.path().join("skills");
+                        if !skills_dir.is_dir() { continue; }
+
+                        if let Ok(skill_entries) = fs::read_dir(&skills_dir) {
+                            for skill_entry in skill_entries.flatten() {
+                                let skill_md = skill_entry.path().join("SKILL.md");
+                                if !skill_md.is_file() { continue; }
+
+                                if let Ok(content) = fs::read_to_string(&skill_md) {
+                                    let (name, description) = parse_skill_frontmatter(&content);
+                                    let skill_name = name.unwrap_or_else(|| {
+                                        skill_entry.file_name().to_string_lossy().to_string()
+                                    });
+                                    skills.push(SkillIpc {
+                                        name: skill_name,
+                                        description: description.unwrap_or_default(),
+                                        plugin: plugin_name.clone(),
+                                        content,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    skills.sort_by(|a, b| a.name.cmp(&b.name));
+    skills
+}
+
+/// Extract name and description from YAML frontmatter in a SKILL.md file.
+fn parse_skill_frontmatter(content: &str) -> (Option<String>, Option<String>) {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") {
+        return (None, None);
+    }
+    // Find the closing ---
+    if let Some(end) = trimmed[3..].find("---") {
+        let frontmatter = &trimmed[3..3 + end];
+        let mut name = None;
+        let mut description = None;
+        for line in frontmatter.lines() {
+            let line = line.trim();
+            if let Some(val) = line.strip_prefix("name:") {
+                name = Some(val.trim().trim_matches('"').trim_matches('\'').to_string());
+            } else if let Some(val) = line.strip_prefix("description:") {
+                description = Some(val.trim().trim_matches('"').trim_matches('\'').to_string());
+            }
+        }
+        (name, description)
+    } else {
+        (None, None)
     }
 }

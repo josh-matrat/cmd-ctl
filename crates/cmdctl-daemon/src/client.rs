@@ -5,7 +5,7 @@ use std::os::unix::net::UnixStream;
 use anyhow::{Context, Result};
 
 use crate::daemon;
-use crate::ipc::{self, GridSnapshot, KnowledgeEntryIpc, Request, Response, SessionEntry, SessionId, SessionSummaryIpc, TicketIpc};
+use crate::ipc::{self, GridSnapshot, KnowledgeEntryIpc, Request, Response, SessionEntry, SessionId, SessionSummaryIpc, SkillIpc, TicketIpc};
 
 pub struct DaemonClient {
     stream: UnixStream,
@@ -204,6 +204,24 @@ impl DaemonClient {
     pub fn list_session_summaries(&mut self, working_dir: Option<&str>) -> Result<Vec<SessionSummaryIpc>> {
         match self.request(Request::ListSessionSummaries { working_dir: working_dir.map(|s| s.to_string()) })? {
             Response::SessionSummaryList(list) => Ok(list),
+            Response::Error(e) => anyhow::bail!("{}", e),
+            _ => anyhow::bail!("Unexpected response"),
+        }
+    }
+
+    // -- Skill operations --
+
+    pub fn list_skills(&mut self) -> Result<Vec<SkillIpc>> {
+        match self.request(Request::ListSkills)? {
+            Response::SkillList(list) => Ok(list),
+            Response::Error(e) => anyhow::bail!("{}", e),
+            _ => anyhow::bail!("Unexpected response"),
+        }
+    }
+
+    pub fn get_skill(&mut self, name: &str) -> Result<SkillIpc> {
+        match self.request(Request::GetSkill { name: name.to_string() })? {
+            Response::SkillDetail(s) => Ok(s),
             Response::Error(e) => anyhow::bail!("{}", e),
             _ => anyhow::bail!("Unexpected response"),
         }
