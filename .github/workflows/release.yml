@@ -1,0 +1,86 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build CMDCTL.dmg
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Create app bundle and DMG
+        run: |
+          APP_NAME="CMDCTL"
+          APP_DIR="bundle/${APP_NAME}.app"
+
+          rm -rf "$APP_DIR"
+          mkdir -p "$APP_DIR/Contents/MacOS"
+          mkdir -p "$APP_DIR/Contents/Resources"
+
+          cp target/release/cmdctl "$APP_DIR/Contents/MacOS/cmdctl"
+          cp bundle/Info.plist "$APP_DIR/Contents/Info.plist"
+
+          # Generate .icns from icon
+          ICON_SRC="bundle/icon_1024.png"
+          if [ -f "$ICON_SRC" ]; then
+            ICONSET="bundle/AppIcon.iconset"
+            mkdir -p "$ICONSET"
+            sips -z 16 16     "$ICON_SRC" --out "$ICONSET/icon_16x16.png"      > /dev/null
+            sips -z 32 32     "$ICON_SRC" --out "$ICONSET/icon_16x16@2x.png"   > /dev/null
+            sips -z 32 32     "$ICON_SRC" --out "$ICONSET/icon_32x32.png"      > /dev/null
+            sips -z 64 64     "$ICON_SRC" --out "$ICONSET/icon_32x32@2x.png"   > /dev/null
+            sips -z 128 128   "$ICON_SRC" --out "$ICONSET/icon_128x128.png"    > /dev/null
+            sips -z 256 256   "$ICON_SRC" --out "$ICONSET/icon_128x128@2x.png" > /dev/null
+            sips -z 256 256   "$ICON_SRC" --out "$ICONSET/icon_256x256.png"    > /dev/null
+            sips -z 512 512   "$ICON_SRC" --out "$ICONSET/icon_256x256@2x.png" > /dev/null
+            sips -z 512 512   "$ICON_SRC" --out "$ICONSET/icon_512x512.png"    > /dev/null
+            sips -z 1024 1024 "$ICON_SRC" --out "$ICONSET/icon_512x512@2x.png" > /dev/null
+            iconutil -c icns "$ICONSET" -o "$APP_DIR/Contents/Resources/AppIcon.icns"
+            rm -rf "$ICONSET"
+          fi
+
+          # Create DMG
+          DMG_STAGING="bundle/dmg-staging"
+          rm -rf "$DMG_STAGING" "CMDCTL.dmg"
+          mkdir -p "$DMG_STAGING"
+          cp -r "$APP_DIR" "$DMG_STAGING/"
+          ln -s /Applications "$DMG_STAGING/Applications"
+
+          hdiutil create \
+            -volname "$APP_NAME" \
+            -srcfolder "$DMG_STAGING" \
+            -ov \
+            -format UDZO \
+            "CMDCTL.dmg"
+
+          rm -rf "$DMG_STAGING"
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: CMDCTL.dmg
+          generate_release_notes: true
