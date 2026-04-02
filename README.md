@@ -6,7 +6,7 @@ CMD CTL is a native macOS terminal built with Metal rendering that doubles as a 
 > **Status:** Early alpha. Expect rough edges, missing features, and breaking changes. Feedback and contributions welcome.
 
 
-<img width="1512" height="770" alt="image" src="https://github.com/user-attachments/assets/e5bf0a5b-38c6-40b5-8f24-fdb5413956a4" />
+<img width="1232" height="739" alt="image" src="https://github.com/user-attachments/assets/3d4a2135-a417-4b44-a03f-4a5d7d7ac434" />
 
 ## Features
 
