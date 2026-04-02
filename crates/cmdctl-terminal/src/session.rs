@@ -102,7 +102,7 @@ impl Session {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
 
         let pty_config = tty::Options {
-            shell: Some(tty::Shell::new(shell, vec![])),
+            shell: Some(tty::Shell::new(shell, vec![String::from("-l")])),
             working_directory: working_dir,
             ..Default::default()
         };
