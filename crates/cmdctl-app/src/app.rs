@@ -16,7 +16,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 static MENU_SETTINGS_CLICKED: AtomicBool = AtomicBool::new(false);
 
 use cmdctl_daemon::client::DaemonClient;
-use cmdctl_daemon::ipc::{SessionEntry, TicketIpc};
+use cmdctl_daemon::ipc::{GridSnapshot, SessionEntry, TicketIpc};
 use cmdctl_input::keybinding::{KeyBinding, KeybindingManager, Modifiers};
 use cmdctl_renderer::grid_renderer::{colors, GridRenderer};
 use cmdctl_renderer::text::FontInfo;
@@ -80,6 +80,15 @@ struct PaneRect {
     rows: usize,
 }
 
+struct Selection {
+    /// Pane slot being selected in.
+    pane_slot: usize,
+    /// Start point in pane-local grid coordinates (col, row).
+    start: (usize, usize),
+    /// End point in pane-local grid coordinates (col, row).
+    end: (usize, usize),
+}
+
 // ---------------------------------------------------------------------------
 // App structs
 // ---------------------------------------------------------------------------
@@ -126,6 +135,11 @@ struct AppState {
     scale_factor: f64,
     // Mouse position in logical pixels (for click-to-focus).
     cursor_position: (f64, f64),
+    // Text selection state.
+    selection: Option<Selection>,
+    selecting: bool,
+    // Accumulated sub-line scroll from trackpad pixel deltas.
+    scroll_accumulator: f64,
     // Prompts deferred until Claude is ready (prevents race condition).
     pending_prompts: Vec<PendingPrompt>,
 }
@@ -246,6 +260,29 @@ impl ApplicationHandler for CmdctlApp {
                         }
                     }
 
+                    // Cmd+C / Cmd+V: copy/paste.
+                    if let Key::Character(c) = &event.logical_key {
+                        match c.as_str() {
+                            "c" => {
+                                if state.modal.is_none() {
+                                    handle_copy(state);
+                                }
+                                return;
+                            }
+                            "v" => {
+                                if state.modal.is_some() {
+                                    if let Some(text) = get_clipboard_text() {
+                                        paste_into_modal(state, &text);
+                                    }
+                                } else {
+                                    handle_paste(state);
+                                }
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+
                     // Cmd+Enter on a ticket: open a Claude session for this ticket.
                     if let Key::Named(NamedKey::Enter) = &event.logical_key {
                         // From the ticket detail modal
@@ -316,23 +353,63 @@ impl ApplicationHandler for CmdctlApp {
             }
 
             WindowEvent::MouseWheel { delta, .. } => {
-                // Scroll the focused pane's terminal.
-                if let Focus::Pane(idx) = &state.focus {
-                    if let Some(session_id) = state.panes[*idx].clone() {
-                        let lines = match delta {
-                            MouseScrollDelta::LineDelta(_, y) => y as i32 * 3,
-                            MouseScrollDelta::PixelDelta(pos) => (pos.y / state.scale_factor / self.font.cell_height) as i32,
-                        };
-                        if lines != 0 {
-                            let _ = state.client.scroll_session(&session_id, lines);
+                // Determine which session to scroll: quick terminal (if visible) or focused pane.
+                let session_id = state.quick_terminal.as_ref()
+                    .filter(|qt| qt.visible)
+                    .map(|qt| qt.session_id.clone())
+                    .or_else(|| match &state.focus {
+                        Focus::Pane(idx) => state.panes[*idx].clone(),
+                        _ => None,
+                    });
+
+                if let Some(session_id) = session_id {
+                    let lines = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => {
+                            state.scroll_accumulator = 0.0;
+                            y as i32 * 3
                         }
+                        MouseScrollDelta::PixelDelta(pos) => {
+                            // Accumulate sub-line pixel deltas from trackpad.
+                            state.scroll_accumulator += pos.y / state.scale_factor / self.font.cell_height;
+                            let whole = state.scroll_accumulator as i32;
+                            state.scroll_accumulator -= whole as f64;
+                            whole
+                        }
+                    };
+                    if lines != 0 {
+                        let _ = state.client.scroll_session(&session_id, lines);
                     }
                 }
             }
 
             WindowEvent::CursorMoved { position, .. } => {
-                // Track logical position for click-to-focus.
                 state.cursor_position = (position.x / state.scale_factor, position.y / state.scale_factor);
+
+                // Update selection end while dragging.
+                if state.selecting {
+                    let (lx, ly) = state.cursor_position;
+                    let cursor_col = (lx / self.font.cell_width) as usize;
+                    let cursor_row = (ly / self.font.cell_height) as usize;
+
+                    // Pre-compute layout before mutably borrowing selection.
+                    let slot_occupied = [
+                        state.panes[0].is_some(), state.panes[1].is_some(),
+                        state.panes[2].is_some(), state.panes[3].is_some(),
+                    ];
+                    let pane_count = slot_occupied.iter().filter(|&&b| b).count();
+                    let rects = compute_pane_rects(state.cols as usize, state.rows as usize, pane_count);
+                    let occupied: Vec<usize> = (0..4).filter(|i| slot_occupied[*i]).collect();
+
+                    if let Some(sel) = &mut state.selection {
+                        if let Some(rect_idx) = occupied.iter().position(|&s| s == sel.pane_slot) {
+                            if let Some(rect) = rects.get(rect_idx) {
+                                let pane_col = cursor_col.saturating_sub(rect.col).min(rect.cols.saturating_sub(1));
+                                let pane_row = cursor_row.saturating_sub(rect.row).min(rect.rows.saturating_sub(1));
+                                sel.end = (pane_col, pane_row);
+                            }
+                        }
+                    }
+                }
             }
 
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
@@ -342,9 +419,9 @@ impl ApplicationHandler for CmdctlApp {
 
                 if click_col < SIDEBAR_COLS {
                     state.focus = Focus::Sidebar;
+                    state.selection = None;
                 } else {
                     let rects = compute_pane_rects(state.cols as usize, state.rows as usize, state.pane_count());
-                    // Map rect index back to actual pane slot index.
                     let occupied: Vec<usize> = (0..4).filter(|i| state.panes[*i].is_some()).collect();
                     for (rect_idx, rect) in rects.iter().enumerate() {
                         if click_col >= rect.col && click_col < rect.col + rect.cols
@@ -352,8 +429,28 @@ impl ApplicationHandler for CmdctlApp {
                         {
                             if let Some(&slot) = occupied.get(rect_idx) {
                                 state.focus = Focus::Pane(slot);
+                                let pane_col = click_col - rect.col;
+                                let pane_row = click_row - rect.row;
+                                state.selection = Some(Selection {
+                                    pane_slot: slot,
+                                    start: (pane_col, pane_row),
+                                    end: (pane_col, pane_row),
+                                });
+                                state.selecting = true;
                             }
                             break;
+                        }
+                    }
+                }
+            }
+
+            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+                if state.selecting {
+                    state.selecting = false;
+                    // Clear selection if it was just a click (no drag).
+                    if let Some(sel) = &state.selection {
+                        if sel.start == sel.end {
+                            state.selection = None;
                         }
                     }
                 }
@@ -771,6 +868,9 @@ fn init_window(event_loop: &ActiveEventLoop, font: &FontInfo) -> Result<AppState
         quick_terminal: None,
         cols, rows, scale_factor,
         cursor_position: (0.0, 0.0),
+        selection: None,
+        selecting: false,
+        scroll_accumulator: 0.0,
         pending_prompts: Vec::new(),
     })
 }
@@ -1624,6 +1724,124 @@ fn handle_terminal_input(key: &Key, mods: Modifiers, state: &mut AppState, sessi
 }
 
 // ---------------------------------------------------------------------------
+// Copy / Paste
+// ---------------------------------------------------------------------------
+
+fn handle_copy(state: &mut AppState) {
+    if let Some(sel) = state.selection.take() {
+        // Selection exists — copy text to clipboard.
+        if let Some(session_id) = state.panes.get(sel.pane_slot).and_then(|p| p.clone()) {
+            if let Ok(grid) = state.client.get_grid(&session_id) {
+                let text = extract_selected_text(&grid, &sel);
+                if !text.is_empty() {
+                    set_clipboard_text(&text);
+                }
+            }
+        }
+    } else {
+        // No selection — send Ctrl+C (interrupt) to focused session.
+        let session_id = if let Some(qt) = &state.quick_terminal {
+            if qt.visible { Some(qt.session_id.clone()) } else { None }
+        } else {
+            None
+        }.or_else(|| match &state.focus {
+            Focus::Pane(idx) => state.panes[*idx].clone(),
+            _ => None,
+        });
+
+        if let Some(sid) = session_id {
+            let _ = state.client.send_input(&sid, &[0x03]);
+        }
+    }
+}
+
+fn handle_paste(state: &mut AppState) {
+    // Quick terminal takes priority when visible.
+    let session_id = state.quick_terminal.as_ref()
+        .filter(|qt| qt.visible)
+        .map(|qt| qt.session_id.clone())
+        .or_else(|| match &state.focus {
+            Focus::Pane(idx) => state.panes[*idx].clone(),
+            _ => None,
+        });
+
+    if let Some(sid) = session_id {
+        if let Some(text) = get_clipboard_text() {
+            if !text.is_empty() {
+                let _ = state.client.send_input(&sid, text.as_bytes());
+            }
+        }
+    }
+}
+
+fn paste_into_modal(state: &mut AppState, text: &str) {
+    let modal = match &mut state.modal { Some(m) => m, None => return };
+    let (buf, cursor) = match modal {
+        Modal::PathInput { input, cursor_pos, .. } => (input, cursor_pos),
+        Modal::BranchInput { input, cursor_pos, .. } => (input, cursor_pos),
+        Modal::RenameInput { input, cursor_pos, .. } => (input, cursor_pos),
+        Modal::TicketTitleInput { input, cursor_pos, .. } => (input, cursor_pos),
+        Modal::Settings { editing, edit_buffer, edit_cursor, .. } if *editing => (edit_buffer, edit_cursor),
+        _ => return,
+    };
+    for ch in text.chars() {
+        if ch == '\n' || ch == '\r' { continue; } // skip newlines in single-line inputs
+        buf.insert(*cursor, ch);
+        *cursor += 1;
+    }
+}
+
+fn normalize_selection(start: (usize, usize), end: (usize, usize)) -> ((usize, usize), (usize, usize)) {
+    if start.1 < end.1 || (start.1 == end.1 && start.0 <= end.0) {
+        (start, end)
+    } else {
+        (end, start)
+    }
+}
+
+fn extract_selected_text(grid: &GridSnapshot, sel: &Selection) -> String {
+    let (start, end) = normalize_selection(sel.start, sel.end);
+    let cols = grid.cols as usize;
+    let rows = grid.rows as usize;
+
+    // Build flat lookup for fast access.
+    let total = cols * rows;
+    let mut chars = vec![' '; total];
+    for cell in &grid.cells {
+        let idx = cell.row as usize * cols + cell.col as usize;
+        if idx < chars.len() {
+            chars[idx] = cell.ch;
+        }
+    }
+
+    let mut lines = Vec::new();
+    for row in start.1..=end.1.min(rows.saturating_sub(1)) {
+        let col_start = if row == start.1 { start.0 } else { 0 };
+        let col_end = if row == end.1 { end.0 } else { cols.saturating_sub(1) };
+
+        let mut line = String::new();
+        for col in col_start..=col_end.min(cols.saturating_sub(1)) {
+            let idx = row * cols + col;
+            line.push(if idx < chars.len() { chars[idx] } else { ' ' });
+        }
+        lines.push(line.trim_end().to_string());
+    }
+
+    lines.join("\n")
+}
+
+fn set_clipboard_text(text: &str) {
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+        let _ = clipboard.set_text(text.to_string());
+    }
+}
+
+fn get_clipboard_text() -> Option<String> {
+    arboard::Clipboard::new().ok()
+        .and_then(|mut cb| cb.get_text().ok())
+}
+
+// ---------------------------------------------------------------------------
 // Resize
 // ---------------------------------------------------------------------------
 
@@ -1753,6 +1971,30 @@ fn render_frame(state: &mut AppState, font: &FontInfo) {
                 let idx = row * cols + col;
                 if idx < cells.len() {
                     cells[idx] = (col, row, cell.ch, fg, bg, show_cursor);
+                }
+            }
+
+            // Selection highlighting: invert fg/bg for selected cells.
+            if let Some(sel) = &state.selection {
+                if sel.pane_slot == slot {
+                    let (sel_start, sel_end) = normalize_selection(sel.start, sel.end);
+                    let max_row = sel_end.1.min(rect.rows.saturating_sub(1));
+                    for sel_row in sel_start.1..=max_row {
+                        let c0 = if sel_row == sel_start.1 { sel_start.0 } else { 0 };
+                        let c1 = if sel_row == sel_end.1 { sel_end.0 } else { rect.cols.saturating_sub(1) };
+                        for sel_col in c0..=c1.min(rect.cols.saturating_sub(1)) {
+                            let gc = rect.col + sel_col;
+                            let gr = rect.row + sel_row;
+                            if gc < cols && gr < rows {
+                                let idx = gr * cols + gc;
+                                if idx < cells.len() {
+                                    let tmp = cells[idx].3;
+                                    cells[idx].3 = cells[idx].4;
+                                    cells[idx].4 = tmp;
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

@@ -210,22 +210,28 @@ impl SessionManager {
         let term = managed.session.term.lock();
         let content = term.renderable_content();
         let cursor_point = content.cursor.point;
+        let display_offset = content.display_offset as i32;
+        let screen_lines = term.grid().screen_lines() as i32;
 
         let mut cells = Vec::new();
         for indexed in content.display_iter {
             let point = indexed.point;
-            if point.line.0 < 0 { continue; }
+
+            // Convert grid coordinates to screen-relative row.
+            // When scrolled into scrollback, visible lines have negative line
+            // numbers. Adding display_offset maps them back to 0-based screen rows.
+            let screen_row = point.line.0 + display_offset;
+            if screen_row < 0 || screen_row >= screen_lines { continue; }
 
             let ch = indexed.cell.c;
             let is_cursor = point == cursor_point;
 
-            // Convert colors to u8 RGBA (we'll convert to f32 on the client side).
             let fg = color_to_u8(&indexed.cell.fg);
             let bg = color_to_u8(&indexed.cell.bg);
 
             cells.push(CellData {
                 col: point.column.0 as u16,
-                row: point.line.0 as u16,
+                row: screen_row as u16,
                 ch,
                 fg,
                 bg,
