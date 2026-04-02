@@ -8,6 +8,8 @@ pub struct StyledLine {
     pub fg: [f32; 4],
     pub bg: [f32; 4],
     pub centered: bool,
+    /// Optional per-character foreground colors (overrides `fg` where set).
+    pub char_fgs: Option<Vec<[f32; 4]>>,
 }
 
 impl StyledLine {
@@ -17,6 +19,7 @@ impl StyledLine {
             fg: colors::FG,
             bg: colors::BG,
             centered: false,
+            char_fgs: None,
         }
     }
 
@@ -32,6 +35,11 @@ impl StyledLine {
 
     pub fn centered(mut self) -> Self {
         self.centered = true;
+        self
+    }
+
+    pub fn with_char_fgs(mut self, char_fgs: Vec<[f32; 4]>) -> Self {
+        self.char_fgs = Some(char_fgs);
         self
     }
 }
@@ -108,7 +116,10 @@ fn render_lines(
             if ch > ' ' { atlas.get_or_insert(ch, font, scale); }
             let cell_idx = line_idx * cols + col;
             if cell_idx < cells.len() {
-                cells[cell_idx] = (col, line_idx, ch, styled_line.fg, styled_line.bg, false);
+                let fg = styled_line.char_fgs.as_ref()
+                    .and_then(|fgs| fgs.get(char_idx).copied())
+                    .unwrap_or(styled_line.fg);
+                cells[cell_idx] = (col, line_idx, ch, fg, styled_line.bg, false);
             }
         }
     }
@@ -1002,6 +1013,255 @@ fn wrap_text(text: &str, max_cols: usize) -> Vec<String> {
     lines
 }
 
+/// Parse inline markdown spans and produce per-character foreground colors.
+/// Handles **bold**, *italic*, and `code` spans within a single line.
+fn apply_inline_markdown(text: &str, base_fg: [f32; 4]) -> (String, Vec<[f32; 4]>) {
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut out = String::new();
+    let mut fgs: Vec<[f32; 4]> = Vec::new();
+    let mut i = 0;
+
+    let bold_fg = colors::ANSI[15];   // cream/bright white
+    let italic_fg = colors::ANSI[6];  // warm silver
+    let code_fg = colors::ANSI[3];    // gold
+
+    while i < len {
+        // **bold**
+        if i + 1 < len && chars[i] == '*' && chars[i + 1] == '*' {
+            if let Some(end) = find_closing(&chars, i + 2, &['*', '*']) {
+                for &ch in &chars[i + 2..end] {
+                    out.push(ch);
+                    fgs.push(bold_fg);
+                }
+                i = end + 2;
+                continue;
+            }
+        }
+        // *italic*
+        if chars[i] == '*' && (i + 1 >= len || chars[i + 1] != '*') {
+            if let Some(end) = find_closing_single(&chars, i + 1, '*') {
+                for &ch in &chars[i + 1..end] {
+                    out.push(ch);
+                    fgs.push(italic_fg);
+                }
+                i = end + 1;
+                continue;
+            }
+        }
+        // `code`
+        if chars[i] == '`' {
+            if let Some(end) = find_closing_single(&chars, i + 1, '`') {
+                for &ch in &chars[i + 1..end] {
+                    out.push(ch);
+                    fgs.push(code_fg);
+                }
+                i = end + 1;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        fgs.push(base_fg);
+        i += 1;
+    }
+    (out, fgs)
+}
+
+/// Find closing double-char delimiter (e.g. **).
+fn find_closing(chars: &[char], start: usize, delim: &[char; 2]) -> Option<usize> {
+    let mut i = start;
+    while i + 1 < chars.len() {
+        if chars[i] == delim[0] && chars[i + 1] == delim[1] {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Find closing single-char delimiter (e.g. * or `).
+fn find_closing_single(chars: &[char], start: usize, delim: char) -> Option<usize> {
+    for i in start..chars.len() {
+        if chars[i] == delim {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Format a markdown description into styled lines with color formatting.
+/// Handles headers, code blocks, bullet/numbered lists, blockquotes,
+/// horizontal rules, and inline bold/italic/code spans.
+fn format_markdown(text: &str, max_cols: usize, indent: usize) -> Vec<StyledLine> {
+    let prefix: String = " ".repeat(indent);
+    let wrap_width = max_cols;
+    let mut lines: Vec<StyledLine> = Vec::new();
+    let raw_lines: Vec<&str> = text.split('\n').collect();
+    let mut i = 0;
+
+    let h1_fg = colors::ANSI[3];      // gold
+    let h2_fg = colors::ANSI[11];     // bright gold
+    let h3_fg = colors::ANSI[7];      // warm white
+    let code_block_fg = colors::ANSI[3]; // gold
+    let code_block_bg = [0.08, 0.06, 0.06, 0.95]; // slightly lighter bg
+    let quote_fg = colors::ANSI[6];    // warm silver
+    let bullet_fg = colors::ANSI[3];   // gold
+    let rule_fg = colors::ANSI[10];    // dim gray
+
+    while i < raw_lines.len() {
+        let line = raw_lines[i];
+        let trimmed = line.trim();
+
+        // Fenced code block (``` ... ```)
+        if trimmed.starts_with("```") {
+            i += 1;
+            while i < raw_lines.len() {
+                let code_line = raw_lines[i];
+                if code_line.trim().starts_with("```") {
+                    i += 1;
+                    break;
+                }
+                // Truncate long code lines rather than wrapping
+                let display: String = code_line.chars().take(wrap_width).collect();
+                lines.push(StyledLine::new(&format!("{}{}", prefix, display))
+                    .fg(code_block_fg).bg(code_block_bg));
+                i += 1;
+            }
+            lines.push(StyledLine::new(""));
+            continue;
+        }
+
+        // Horizontal rule (---, ***, ___)
+        if (trimmed.starts_with("---") || trimmed.starts_with("***") || trimmed.starts_with("___"))
+            && trimmed.chars().all(|c| c == '-' || c == '*' || c == '_' || c == ' ')
+            && trimmed.len() >= 3
+        {
+            let rule: String = "\u{2500}".repeat(wrap_width.min(40));
+            lines.push(StyledLine::new(&format!("{}{}", prefix, rule)).fg(rule_fg));
+            i += 1;
+            continue;
+        }
+
+        // Headers (# H1, ## H2, ### H3+)
+        if trimmed.starts_with('#') {
+            let hashes = trimmed.chars().take_while(|&c| c == '#').count();
+            let header_text = trimmed[hashes..].trim();
+            let (fg, marker) = match hashes {
+                1 => (h1_fg, "\u{2588} "),  // block char for H1
+                2 => (h2_fg, "\u{25a0} "),  // square for H2
+                _ => (h3_fg, "\u{25b8} "),  // triangle for H3+
+            };
+            let full = format!("{}{}{}", prefix, marker, header_text);
+            let (parsed, char_fgs) = apply_inline_markdown(&full, fg);
+            let wrapped = wrap_text(&parsed, wrap_width + indent);
+            // Apply inline colors to first line, use header color for overflow
+            if let Some(first) = wrapped.first() {
+                let first_fgs: Vec<[f32; 4]> = char_fgs.iter().take(first.chars().count()).copied().collect();
+                lines.push(StyledLine::new(first).fg(fg).with_char_fgs(first_fgs));
+            }
+            for wl in wrapped.iter().skip(1) {
+                lines.push(StyledLine::new(&format!("{}  {}", prefix, wl)).fg(fg));
+            }
+            lines.push(StyledLine::new(""));
+            i += 1;
+            continue;
+        }
+
+        // Blockquotes (> text)
+        if trimmed.starts_with("> ") || trimmed == ">" {
+            let quote_text = if trimmed.len() > 2 { &trimmed[2..] } else { "" };
+            let bar_prefix = format!("{}\u{2502} ", prefix);
+            if quote_text.is_empty() {
+                lines.push(StyledLine::new(&bar_prefix).fg(quote_fg));
+            } else {
+                let (parsed, _) = apply_inline_markdown(quote_text, quote_fg);
+                let wrapped = wrap_text(&parsed, wrap_width.saturating_sub(2));
+                for wl in &wrapped {
+                    lines.push(StyledLine::new(&format!("{}{}", bar_prefix, wl)).fg(quote_fg));
+                }
+            }
+            i += 1;
+            continue;
+        }
+
+        // Bullet lists (- item, * item)
+        if (trimmed.starts_with("- ") || trimmed.starts_with("* "))
+            && !trimmed.starts_with("---")
+            && !trimmed.starts_with("***")
+        {
+            let item_text = &trimmed[2..];
+            let bullet_line = format!("{}\u{2022} {}", prefix, item_text);
+            let (parsed, char_fgs) = apply_inline_markdown(&bullet_line, colors::FG);
+            let wrapped = wrap_text(&parsed, wrap_width + indent);
+            if let Some(first) = wrapped.first() {
+                // Color the bullet character (at prefix offset)
+                let mut fgs = char_fgs.iter().take(first.chars().count()).copied().collect::<Vec<_>>();
+                if fgs.len() > indent {
+                    fgs[indent] = bullet_fg; // the bullet char
+                }
+                lines.push(StyledLine::new(first).fg(colors::FG).with_char_fgs(fgs));
+            }
+            let cont_prefix = format!("{}  ", prefix);
+            for wl in wrapped.iter().skip(1) {
+                lines.push(StyledLine::new(&format!("{}{}", cont_prefix, wl)).fg(colors::FG));
+            }
+            i += 1;
+            continue;
+        }
+
+        // Numbered lists (1. item, 2. item, etc.)
+        if let Some(dot_pos) = trimmed.find(". ") {
+            let num_part = &trimmed[..dot_pos];
+            if !num_part.is_empty() && num_part.chars().all(|c| c.is_ascii_digit()) {
+                let item_text = &trimmed[dot_pos + 2..];
+                let num_line = format!("{}{}. {}", prefix, num_part, item_text);
+                let (parsed, char_fgs) = apply_inline_markdown(&num_line, colors::FG);
+                let wrapped = wrap_text(&parsed, wrap_width + indent);
+                if let Some(first) = wrapped.first() {
+                    // Color the number + dot
+                    let mut fgs = char_fgs.iter().take(first.chars().count()).copied().collect::<Vec<_>>();
+                    for j in indent..indent + num_part.len() + 1 {
+                        if j < fgs.len() { fgs[j] = bullet_fg; }
+                    }
+                    lines.push(StyledLine::new(first).fg(colors::FG).with_char_fgs(fgs));
+                }
+                let cont_prefix = format!("{}   ", prefix);
+                for wl in wrapped.iter().skip(1) {
+                    lines.push(StyledLine::new(&format!("{}{}", cont_prefix, wl)).fg(colors::FG));
+                }
+                i += 1;
+                continue;
+            }
+        }
+
+        // Empty line
+        if trimmed.is_empty() {
+            lines.push(StyledLine::new(""));
+            i += 1;
+            continue;
+        }
+
+        // Regular paragraph text with inline formatting
+        let full = format!("{}{}", prefix, trimmed);
+        let (parsed, char_fgs) = apply_inline_markdown(&full, colors::FG);
+        let wrapped = wrap_text(&parsed, wrap_width + indent);
+        for (wi, wl) in wrapped.iter().enumerate() {
+            if wi == 0 {
+                let fgs: Vec<[f32; 4]> = char_fgs.iter().take(wl.chars().count()).copied().collect();
+                lines.push(StyledLine::new(wl).fg(colors::FG).with_char_fgs(fgs));
+            } else {
+                // Re-parse continuation lines for inline formatting
+                let cont = format!("{}{}", prefix, wl);
+                let (cont_parsed, cont_fgs) = apply_inline_markdown(&cont, colors::FG);
+                lines.push(StyledLine::new(&cont_parsed).fg(colors::FG).with_char_fgs(cont_fgs));
+            }
+        }
+        i += 1;
+    }
+
+    lines
+}
+
 /// Full ticket info for the detail popup.
 #[derive(Clone)]
 pub struct TicketDetailInfo {
@@ -1087,18 +1347,14 @@ pub fn build_ticket_detail(
 
     lines.push(StyledLine::new(""));
 
-    // Description (wrapped)
+    // Description (markdown formatted)
     if !ticket.description.is_empty() {
         lines.push(StyledLine::new("  Description:").fg(colors::ANSI[7]));
         lines.push(StyledLine::new(""));
-        let desc_lines = wrap_text(&ticket.description, wrap_width);
+        let md_lines = format_markdown(&ticket.description, wrap_width, 2);
         let max_desc = rows.saturating_sub(lines.len() + 6); // leave room for footer
-        for dl in desc_lines.iter().take(max_desc) {
-            lines.push(StyledLine::new(&format!("  {}", dl)).fg(colors::FG));
-        }
-        if desc_lines.len() > max_desc {
-            lines.push(StyledLine::new(&format!("  ... ({} more lines)", desc_lines.len() - max_desc))
-                .fg(colors::ANSI[10]));
+        for dl in md_lines.into_iter().take(max_desc) {
+            lines.push(dl);
         }
     }
 
@@ -1581,12 +1837,13 @@ fn build_portal_detail(
     if !detail.description.is_empty() {
         lines.push(StyledLine::new("  Description:").fg(colors::ANSI[7]));
         lines.push(StyledLine::new(""));
-        let desc_lines = wrap_text(&detail.description, wrap_width);
+        let md_lines = format_markdown(&detail.description, wrap_width, 2);
+        let total = md_lines.len();
         let available = rows.saturating_sub(lines.len() + 6);
-        for dl in desc_lines.iter().skip(portal.detail_scroll).take(available) {
-            lines.push(StyledLine::new(&format!("  {}", dl)).fg(colors::FG));
+        for dl in md_lines.into_iter().skip(portal.detail_scroll).take(available) {
+            lines.push(dl);
         }
-        let remaining = desc_lines.len().saturating_sub(portal.detail_scroll + available);
+        let remaining = total.saturating_sub(portal.detail_scroll + available);
         if remaining > 0 {
             lines.push(StyledLine::new(&format!("  ... ({} more lines)", remaining)).fg(colors::ANSI[10]));
         }
