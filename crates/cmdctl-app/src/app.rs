@@ -2380,7 +2380,7 @@ fn render_frame(state: &mut AppState, font: &FontInfo) {
     ca.set_texture(Some(texture));
     ca.set_load_action(MTLLoadAction::Clear);
     ca.set_clear_color(MTLClearColor::new(
-        colors::BG[0] as f64, colors::BG[1] as f64, colors::BG[2] as f64, colors::BG[3] as f64,
+        colors::BG[0] as f64, colors::BG[1] as f64, colors::BG[2] as f64, 1.0,
     ));
     ca.set_store_action(MTLStoreAction::Store);
 
