@@ -56,6 +56,18 @@ pub struct TicketInfo {
     pub provider: String,
 }
 
+/// ASCII art logo lines for the CMD CTL header (LazyVim-style block characters).
+const LOGO_LINE_1: &str = "█▀▀ █▄▀▄█ █▀▄  █▀▀ ▀█▀ █  ";
+const LOGO_LINE_2: &str = "█▄▄ █ ▀ █ █▄▀  █▄▄  █  █▄▄";
+
+/// Push the CMD CTL ASCII art header onto a line buffer.
+fn push_logo(lines: &mut Vec<StyledLine>, bg: [f32; 4]) {
+    lines.push(StyledLine::new("").bg(bg));
+    lines.push(StyledLine::new(LOGO_LINE_1).fg(colors::ANSI[3]).bg(bg).centered());
+    lines.push(StyledLine::new(LOGO_LINE_2).fg(colors::ANSI[3]).bg(bg).centered());
+    lines.push(StyledLine::new("").bg(bg));
+}
+
 /// Sidebar background — slightly darker than main for visual separation.
 const SIDEBAR_BG: [f32; 4] = [0.04, 0.02, 0.02, 0.95];
 
@@ -165,9 +177,7 @@ pub fn build_sidebar(
 
     let mut lines: Vec<StyledLine> = Vec::new();
 
-    lines.push(sb(""));
-    lines.push(sb("CMD CTL").fg(colors::ANSI[3]).centered());
-    lines.push(sb(""));
+    push_logo(&mut lines, bg);
 
     // -- Sessions header --
     let sessions_hdr_fg = if focused && sidebar_section == SidebarSection::Sessions {
@@ -422,11 +432,7 @@ pub fn build_path_input(
 
     let mut lines: Vec<StyledLine> = Vec::new();
 
-    lines.push(StyledLine::new(""));
-    lines.push(StyledLine::new("C M D C T L")
-        .fg(colors::ANSI[3])
-        .centered());
-    lines.push(StyledLine::new(""));
+    push_logo(&mut lines, colors::BG);
 
     let label = if agent_type == "claude" {
         "New Claude Code Session"
@@ -708,11 +714,7 @@ pub fn build_branch_input(
 
     let mut lines: Vec<StyledLine> = Vec::new();
 
-    lines.push(StyledLine::new(""));
-    lines.push(StyledLine::new("C M D C T L")
-        .fg(colors::ANSI[3])
-        .centered());
-    lines.push(StyledLine::new(""));
+    push_logo(&mut lines, colors::BG);
     lines.push(StyledLine::new("  Base Branch").fg(colors::ANSI[1]));
     lines.push(StyledLine::new(""));
     lines.push(StyledLine::new("  Filter:").fg(colors::ANSI[7]));
@@ -860,9 +862,7 @@ pub fn build_settings(
 
     let mut lines: Vec<StyledLine> = Vec::new();
 
-    lines.push(StyledLine::new(""));
-    lines.push(StyledLine::new("C M D C T L").fg(colors::ANSI[3]).centered());
-    lines.push(StyledLine::new(""));
+    push_logo(&mut lines, colors::BG);
     lines.push(StyledLine::new("  SETTINGS").fg(colors::ANSI[7]));
     lines.push(StyledLine::new(""));
 
@@ -1037,11 +1037,7 @@ pub fn build_ticket_detail(
 
     let mut lines: Vec<StyledLine> = Vec::new();
 
-    lines.push(StyledLine::new(""));
-    lines.push(StyledLine::new("C M D C T L")
-        .fg(colors::ANSI[3])
-        .centered());
-    lines.push(StyledLine::new(""));
+    push_logo(&mut lines, colors::BG);
 
     // Ticket key + status/priority icons
     let header = format!("  {} {} {}", ticket.status_icon, ticket.priority_icon, ticket.key);
@@ -1153,11 +1149,7 @@ pub fn build_skill_detail(
 
     let mut lines: Vec<StyledLine> = Vec::new();
 
-    lines.push(StyledLine::new(""));
-    lines.push(StyledLine::new("C M D C T L")
-        .fg(colors::ANSI[3])
-        .centered());
-    lines.push(StyledLine::new(""));
+    push_logo(&mut lines, colors::BG);
 
     // Skill header
     let header = format!("  / {}", skill.name);
@@ -1299,11 +1291,7 @@ pub fn build_command_detail(
 
     let mut lines: Vec<StyledLine> = Vec::new();
 
-    lines.push(StyledLine::new(""));
-    lines.push(StyledLine::new("C M D C T L")
-        .fg(colors::ANSI[3])
-        .centered());
-    lines.push(StyledLine::new(""));
+    push_logo(&mut lines, colors::BG);
 
     // Command header
     let header = format!("  / {}", command.name);
