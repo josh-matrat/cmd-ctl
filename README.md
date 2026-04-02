@@ -217,7 +217,9 @@ Agent sessions additionally display approximate context window usage (0–100%).
 
 The quick terminal (`Cmd+T`) supports terminal-based text editors like `nano`, `vim`, and `neovim`. You can open and edit files directly within the overlay — full keyboard input, syntax highlighting, and all editor features work as expected.
 
-<!-- screenshot placeholder -->
+
+<img width="1263" height="687" alt="image" src="https://github.com/user-attachments/assets/78b99316-0f04-4063-bc78-382195306e33" />
+
 
 ## Architecture
 
