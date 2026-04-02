@@ -16,7 +16,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 static MENU_SETTINGS_CLICKED: AtomicBool = AtomicBool::new(false);
 
 use cmdctl_daemon::client::DaemonClient;
-use cmdctl_daemon::ipc::{GridSnapshot, SessionEntry, SkillIpc, TicketIpc};
+use cmdctl_daemon::ipc::{CommandIpc, GridSnapshot, SessionEntry, SkillIpc, TicketIpc};
 use cmdctl_input::keybinding::{KeyBinding, KeybindingManager, Modifiers};
 use cmdctl_renderer::grid_renderer::{colors, GridRenderer};
 use cmdctl_renderer::text::FontInfo;
@@ -57,6 +57,7 @@ enum Modal {
     TicketTitleInput { ticket_key: String, input: String, cursor_pos: usize },
     TicketDetail { ticket: TicketIpc },
     SkillDetail { skill: SkillIpc, scroll_offset: usize },
+    CommandDetail { command: CommandIpc, scroll_offset: usize },
     Settings {
         rows: Vec<crate::settings::SettingsRow>,
         selected: usize,
@@ -126,6 +127,9 @@ struct AppState {
     // Skills
     skills: Vec<SkillIpc>,
     skill_selected: usize,
+    // Commands
+    commands: Vec<CommandIpc>,
+    command_selected: usize,
     sidebar_section: SidebarSection,
     // Layout
     focus: Focus,
@@ -501,7 +505,7 @@ impl ApplicationHandler for CmdctlApp {
                     state.ticket_selected = state.tickets.len() - 1;
                 }
 
-                // Refresh skills (scanned from disk by daemon).
+                // Refresh skills and commands (scanned from disk by daemon).
                 if state.skills.is_empty() {
                     if let Ok(skills) = state.client.list_skills() {
                         state.skills = skills;
@@ -509,6 +513,14 @@ impl ApplicationHandler for CmdctlApp {
                 }
                 if !state.skills.is_empty() && state.skill_selected >= state.skills.len() {
                     state.skill_selected = state.skills.len() - 1;
+                }
+                if state.commands.is_empty() {
+                    if let Ok(commands) = state.client.list_commands() {
+                        state.commands = commands;
+                    }
+                }
+                if !state.commands.is_empty() && state.command_selected >= state.commands.len() {
+                    state.command_selected = state.commands.len() - 1;
                 }
 
                 // Remove panes whose sessions exited or were killed.
@@ -865,6 +877,8 @@ fn init_window(event_loop: &ActiveEventLoop, font: &FontInfo) -> Result<AppState
         ticket_selected: 0,
         skills: Vec::new(),
         skill_selected: 0,
+        commands: Vec::new(),
+        command_selected: 0,
         sidebar_section: SidebarSection::Sessions,
         focus: Focus::Sidebar,
         panes: [None, None, None, None],
@@ -1163,11 +1177,12 @@ fn handle_global_command(cmd: &str, key: &str, state: &mut AppState, event_loop:
 fn handle_sidebar_input(key: &Key, state: &mut AppState, font: &FontInfo) {
     match key {
         Key::Named(NamedKey::Tab) => {
-            // Cycle through Sessions -> Tickets -> Skills.
+            // Cycle through Sessions -> Tickets -> Skills -> Commands.
             state.sidebar_section = match state.sidebar_section {
                 SidebarSection::Sessions => SidebarSection::Tickets,
                 SidebarSection::Tickets => SidebarSection::Skills,
-                SidebarSection::Skills => SidebarSection::Sessions,
+                SidebarSection::Skills => SidebarSection::Commands,
+                SidebarSection::Commands => SidebarSection::Sessions,
             };
         }
         Key::Named(NamedKey::ArrowUp) => {
@@ -1181,6 +1196,9 @@ fn handle_sidebar_input(key: &Key, state: &mut AppState, font: &FontInfo) {
                 SidebarSection::Skills => {
                     if state.skill_selected > 0 { state.skill_selected -= 1; }
                 }
+                SidebarSection::Commands => {
+                    if state.command_selected > 0 { state.command_selected -= 1; }
+                }
             }
         }
         Key::Named(NamedKey::ArrowDown) => {
@@ -1193,6 +1211,9 @@ fn handle_sidebar_input(key: &Key, state: &mut AppState, font: &FontInfo) {
                 }
                 SidebarSection::Skills => {
                     if state.skill_selected + 1 < state.skills.len() { state.skill_selected += 1; }
+                }
+                SidebarSection::Commands => {
+                    if state.command_selected + 1 < state.commands.len() { state.command_selected += 1; }
                 }
             }
         }
@@ -1214,17 +1235,21 @@ fn handle_sidebar_input(key: &Key, state: &mut AppState, font: &FontInfo) {
                     }
                 }
                 SidebarSection::Tickets => {
-                    // Enter on a ticket: show ticket detail popup.
                     if state.ticket_selected < state.tickets.len() {
                         let ticket = state.tickets[state.ticket_selected].clone();
                         state.modal = Some(Modal::TicketDetail { ticket });
                     }
                 }
                 SidebarSection::Skills => {
-                    // Enter on a skill: show skill detail popup.
                     if state.skill_selected < state.skills.len() {
                         let skill = state.skills[state.skill_selected].clone();
                         state.modal = Some(Modal::SkillDetail { skill, scroll_offset: 0 });
+                    }
+                }
+                SidebarSection::Commands => {
+                    if state.command_selected < state.commands.len() {
+                        let command = state.commands[state.command_selected].clone();
+                        state.modal = Some(Modal::CommandDetail { command, scroll_offset: 0 });
                     }
                 }
             }
@@ -1274,7 +1299,7 @@ fn handle_sidebar_input(key: &Key, state: &mut AppState, font: &FontInfo) {
                                 });
                             }
                         }
-                        SidebarSection::Skills => {}
+                        SidebarSection::Skills | SidebarSection::Commands => {}
                     }
                 }
                 _ => {}
@@ -1552,6 +1577,20 @@ fn handle_modal_input(key: &Key, state: &mut AppState, font: &FontInfo) {
             }
         }
         Modal::SkillDetail { scroll_offset, .. } => {
+            match key {
+                Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter) => {
+                    state.modal = None;
+                }
+                Key::Named(NamedKey::ArrowUp) => {
+                    if *scroll_offset > 0 { *scroll_offset -= 1; }
+                }
+                Key::Named(NamedKey::ArrowDown) => {
+                    *scroll_offset += 1;
+                }
+                _ => {}
+            }
+        }
+        Modal::CommandDetail { scroll_offset, .. } => {
             match key {
                 Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter) => {
                     state.modal = None;
@@ -1961,11 +2000,18 @@ fn render_frame(state: &mut AppState, font: &FontInfo) {
             plugin: s.plugin.clone(),
         }
     }).collect();
+    let command_infos: Vec<ui_renderer::CommandInfo> = state.commands.iter().map(|c| {
+        ui_renderer::CommandInfo {
+            name: c.name.clone(),
+            plugin: c.plugin.clone(),
+        }
+    }).collect();
     let sidebar_cells = ui_renderer::build_sidebar(
         sidebar_w, rows, &sidebar_infos, state.sidebar_selected,
         &state.panes, sidebar_focused,
         &ticket_infos, state.ticket_selected,
-        &skill_infos, state.skill_selected, state.sidebar_section,
+        &skill_infos, state.skill_selected,
+        &command_infos, state.command_selected, state.sidebar_section,
         &mut state.renderer.atlas, font, sf,
     );
     for cell in &sidebar_cells {
@@ -2137,6 +2183,16 @@ fn render_frame(state: &mut AppState, font: &FontInfo) {
                     content: skill.content.clone(),
                 };
                 ui_renderer::build_skill_detail(main_cols, rows, &detail, *scroll_offset,
+                    &mut state.renderer.atlas, font, sf)
+            }
+            Modal::CommandDetail { command, scroll_offset } => {
+                let detail = ui_renderer::CommandDetailInfo {
+                    name: command.name.clone(),
+                    description: command.description.clone(),
+                    plugin: command.plugin.clone(),
+                    content: command.content.clone(),
+                };
+                ui_renderer::build_command_detail(main_cols, rows, &detail, *scroll_offset,
                     &mut state.renderer.atlas, font, sf)
             }
             Modal::Settings { rows: setting_rows, selected, editing, edit_buffer, edit_cursor, scroll_offset } => {

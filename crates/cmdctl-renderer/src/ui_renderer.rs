@@ -113,13 +113,24 @@ pub struct SkillInfo {
     pub plugin: String,
 }
 
+/// Command info for sidebar display.
+#[derive(Clone)]
+pub struct CommandInfo {
+    pub name: String,
+    pub plugin: String,
+}
+
 /// Which section of the sidebar is focused.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SidebarSection {
     Sessions,
     Tickets,
     Skills,
+    Commands,
 }
+
+/// Max visible items in a scrollable sidebar list.
+const SIDEBAR_LIST_WINDOW: usize = 10;
 
 /// Build cell data for the sidebar panel.
 pub fn build_sidebar(
@@ -133,6 +144,8 @@ pub fn build_sidebar(
     ticket_selected: usize,
     skills: &[SkillInfo],
     skill_selected: usize,
+    commands: &[CommandInfo],
+    command_selected: usize,
     sidebar_section: SidebarSection,
     atlas: &mut GlyphAtlas,
     font: &FontInfo,
@@ -258,20 +271,36 @@ pub fn build_sidebar(
         }
     }
 
-    // -- Skills section --
+    // -- Skills section (windowed, max SIDEBAR_LIST_WINDOW visible) --
     lines.push(sb(""));
     let skills_hdr_fg = if focused && sidebar_section == SidebarSection::Skills {
         colors::ANSI[3]
     } else {
         colors::ANSI[10]
     };
-    lines.push(sb(" SKILLS").fg(skills_hdr_fg));
+    let skills_count = if skills.is_empty() {
+        " SKILLS".to_string()
+    } else {
+        format!(" SKILLS ({})", skills.len())
+    };
+    lines.push(sb(&skills_count).fg(skills_hdr_fg));
 
     if skills.is_empty() {
         lines.push(sb("  (none)").fg(colors::ANSI[10]));
     } else {
-        let max_skills = rows.saturating_sub(lines.len() + 12);
-        for (i, skill) in skills.iter().take(max_skills).enumerate() {
+        let window = SIDEBAR_LIST_WINDOW;
+        let scroll_top = if skill_selected >= window {
+            skill_selected - window + 1
+        } else {
+            0
+        };
+        let visible_end = (scroll_top + window).min(skills.len());
+
+        if scroll_top > 0 {
+            lines.push(sb(&format!("  \u{2191} {} above", scroll_top)).fg(colors::ANSI[10]));
+        }
+        for i in scroll_top..visible_end {
+            let skill = &skills[i];
             let is_selected = i == skill_selected && focused && sidebar_section == SidebarSection::Skills;
 
             let max_name = cols.saturating_sub(4);
@@ -281,7 +310,7 @@ pub fn build_sidebar(
             let fg = if is_selected {
                 colors::ANSI[15]
             } else {
-                colors::ANSI[6] // cyan for skills
+                colors::ANSI[6]
             };
 
             let row_bg = if is_selected {
@@ -292,9 +321,65 @@ pub fn build_sidebar(
 
             lines.push(StyledLine::new(&line).fg(fg).bg(row_bg));
         }
-        if skills.len() > max_skills {
-            let more = skills.len() - max_skills;
-            lines.push(sb(&format!("  +{} more", more)).fg(colors::ANSI[10]));
+        let remaining = skills.len().saturating_sub(visible_end);
+        if remaining > 0 {
+            lines.push(sb(&format!("  \u{2193} {} below", remaining)).fg(colors::ANSI[10]));
+        }
+    }
+
+    // -- Commands section (windowed, max SIDEBAR_LIST_WINDOW visible) --
+    lines.push(sb(""));
+    let cmds_hdr_fg = if focused && sidebar_section == SidebarSection::Commands {
+        colors::ANSI[3]
+    } else {
+        colors::ANSI[10]
+    };
+    let cmds_count = if commands.is_empty() {
+        " COMMANDS".to_string()
+    } else {
+        format!(" COMMANDS ({})", commands.len())
+    };
+    lines.push(sb(&cmds_count).fg(cmds_hdr_fg));
+
+    if commands.is_empty() {
+        lines.push(sb("  (none)").fg(colors::ANSI[10]));
+    } else {
+        let window = SIDEBAR_LIST_WINDOW;
+        let scroll_top = if command_selected >= window {
+            command_selected - window + 1
+        } else {
+            0
+        };
+        let visible_end = (scroll_top + window).min(commands.len());
+
+        if scroll_top > 0 {
+            lines.push(sb(&format!("  \u{2191} {} above", scroll_top)).fg(colors::ANSI[10]));
+        }
+        for i in scroll_top..visible_end {
+            let cmd = &commands[i];
+            let is_selected = i == command_selected && focused && sidebar_section == SidebarSection::Commands;
+
+            let max_name = cols.saturating_sub(4);
+            let name: String = cmd.name.chars().take(max_name).collect();
+            let line = format!(" / {}", name);
+
+            let fg = if is_selected {
+                colors::ANSI[15]
+            } else {
+                colors::ANSI[3] // yellow for commands
+            };
+
+            let row_bg = if is_selected {
+                [0.18, 0.08, 0.03, 0.85]
+            } else {
+                bg
+            };
+
+            lines.push(StyledLine::new(&line).fg(fg).bg(row_bg));
+        }
+        let remaining = commands.len().saturating_sub(visible_end);
+        if remaining > 0 {
+            lines.push(sb(&format!("  \u{2193} {} below", remaining)).fg(colors::ANSI[10]));
         }
     }
 
@@ -1179,4 +1264,132 @@ fn strip_frontmatter(content: &str) -> &str {
     } else {
         content
     }
+}
+
+// ---------------------------------------------------------------------------
+// Modal: command detail
+// ---------------------------------------------------------------------------
+
+/// Full command info for the detail popup.
+#[derive(Clone)]
+pub struct CommandDetailInfo {
+    pub name: String,
+    pub description: String,
+    pub plugin: String,
+    pub content: String,
+}
+
+/// Build cell data for the command detail popup.
+pub fn build_command_detail(
+    cols: usize,
+    rows: usize,
+    command: &CommandDetailInfo,
+    scroll_offset: usize,
+    atlas: &mut GlyphAtlas,
+    font: &FontInfo,
+    scale: f64,
+) -> Vec<(usize, usize, char, [f32; 4], [f32; 4], bool)> {
+    let mut cells = Vec::new();
+
+    for row in 0..rows {
+        for col in 0..cols {
+            cells.push((col, row, ' ', colors::FG, colors::BG, false));
+        }
+    }
+
+    let mut lines: Vec<StyledLine> = Vec::new();
+
+    lines.push(StyledLine::new(""));
+    lines.push(StyledLine::new("C M D C T L")
+        .fg(colors::ANSI[3])
+        .centered());
+    lines.push(StyledLine::new(""));
+
+    // Command header
+    let header = format!("  / {}", command.name);
+    lines.push(StyledLine::new(&header).fg(colors::ANSI[3]));
+    lines.push(StyledLine::new(""));
+
+    // Plugin name
+    lines.push(StyledLine::new(&format!("  Plugin:  {}", command.plugin)).fg(colors::ANSI[7]));
+    lines.push(StyledLine::new(""));
+
+    // Description
+    let indent = 2;
+    let wrap_width = cols.saturating_sub(indent + 2);
+    if !command.description.is_empty() {
+        lines.push(StyledLine::new("  Description:").fg(colors::ANSI[7]));
+        let desc_lines = wrap_text(&command.description, wrap_width);
+        for dl in &desc_lines {
+            lines.push(StyledLine::new(&format!("  {}", dl)).fg(colors::FG));
+        }
+        lines.push(StyledLine::new(""));
+    }
+
+    // Separator
+    let sep: String = "\u{2500}".repeat(cols.saturating_sub(4));
+    lines.push(StyledLine::new(&format!("  {}", sep)).fg(colors::ANSI[8]));
+    lines.push(StyledLine::new(""));
+
+    // Render the markdown content, stripping frontmatter
+    let body = strip_frontmatter(&command.content);
+    let footer_rows = 4;
+    let available = rows.saturating_sub(lines.len() + footer_rows);
+
+    let mut body_lines: Vec<StyledLine> = Vec::new();
+    for raw_line in body.lines() {
+        if raw_line.is_empty() {
+            body_lines.push(StyledLine::new(""));
+        } else {
+            let (text, fg) = if raw_line.starts_with("###") {
+                (raw_line.trim_start_matches('#').trim(), colors::ANSI[6])
+            } else if raw_line.starts_with("##") {
+                (raw_line.trim_start_matches('#').trim(), colors::ANSI[3])
+            } else if raw_line.starts_with('#') {
+                (raw_line.trim_start_matches('#').trim(), colors::ANSI[15])
+            } else if raw_line.starts_with("```") {
+                (raw_line, colors::ANSI[10])
+            } else if raw_line.starts_with("- ") || raw_line.starts_with("* ") {
+                (raw_line, colors::FG)
+            } else {
+                (raw_line, colors::FG)
+            };
+
+            let wrapped = wrap_text(text, wrap_width);
+            for wl in wrapped {
+                body_lines.push(StyledLine::new(&format!("  {}", wl)).fg(fg));
+            }
+        }
+    }
+
+    let total_body = body_lines.len();
+    let visible_body: Vec<StyledLine> = body_lines
+        .into_iter()
+        .skip(scroll_offset)
+        .take(available)
+        .collect();
+
+    for bl in visible_body {
+        lines.push(bl);
+    }
+
+    if total_body > available {
+        let remaining = total_body.saturating_sub(scroll_offset + available);
+        if remaining > 0 {
+            lines.push(StyledLine::new(&format!("  ... ({} more lines, \u{2191}\u{2193} to scroll)", remaining))
+                .fg(colors::ANSI[10]));
+        }
+    }
+
+    // Footer hints
+    let footer_start = rows.saturating_sub(4);
+    while lines.len() < footer_start {
+        lines.push(StyledLine::new(""));
+    }
+    lines.push(StyledLine::new(""));
+    lines.push(StyledLine::new("  Escape/Enter   Close").fg(colors::ANSI[10]));
+    lines.push(StyledLine::new("  \u{2191}\u{2193}           Scroll").fg(colors::ANSI[10]));
+
+    render_lines(&lines, cols, rows, colors::BG, &mut cells, atlas, font, scale);
+    cells
 }

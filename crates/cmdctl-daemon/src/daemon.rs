@@ -15,7 +15,7 @@ use parking_lot::Mutex;
 use cmdctl_knowledge::store::KnowledgeStore;
 use cmdctl_tickets::manager::TicketManager;
 use crate::db::SessionDb;
-use crate::ipc::{self, KnowledgeEntryIpc, Request, Response, SessionSummaryIpc, SkillIpc, TicketIpc};
+use crate::ipc::{self, CommandIpc, KnowledgeEntryIpc, Request, Response, SessionSummaryIpc, SkillIpc, TicketIpc};
 use crate::session_manager::SessionManager;
 
 const SOCKET_NAME: &str = "cmdctl.sock";
@@ -482,19 +482,84 @@ fn process_request(
                 None => Response::Error(format!("Skill not found: {}", name)),
             }
         }
+
+        // -- Command operations --
+
+        Request::ListCommands => {
+            Response::CommandList(scan_commands())
+        }
+        Request::GetCommand { name } => {
+            let commands = scan_commands();
+            match commands.into_iter().find(|c| c.name == name) {
+                Some(c) => Response::CommandDetail(c),
+                None => Response::Error(format!("Command not found: {}", name)),
+            }
+        }
     }
 }
 
-/// Scan ~/.claude/plugins/ for SKILL.md files and parse their metadata.
+/// Scan plugins and ~/.claude/skills/ for SKILL.md files.
 fn scan_skills() -> Vec<SkillIpc> {
-    let plugins_dir = match dirs::home_dir() {
-        Some(h) => h.join(".claude").join("plugins"),
+    let home = match dirs::home_dir() {
+        Some(h) => h,
         None => return Vec::new(),
     };
+    let claude_dir = home.join(".claude");
 
     let mut skills = Vec::new();
 
-    // Walk marketplaces/*/{ plugins, external_plugins }/*/skills/*/SKILL.md
+    // 1. Walk marketplaces/*/{ plugins, external_plugins }/*/skills/*/SKILL.md
+    scan_plugin_skills(&claude_dir.join("plugins"), &mut skills);
+
+    // 2. User-level custom skills: ~/.claude/skills/*/SKILL.md
+    let user_skills = claude_dir.join("skills");
+    if let Ok(entries) = fs::read_dir(&user_skills) {
+        for entry in entries.flatten() {
+            let skill_md = entry.path().join("SKILL.md");
+            if !skill_md.is_file() { continue; }
+            if let Ok(content) = fs::read_to_string(&skill_md) {
+                let (name, description) = parse_frontmatter(&content);
+                let skill_name = name.unwrap_or_else(|| {
+                    entry.file_name().to_string_lossy().to_string()
+                });
+                skills.push(SkillIpc {
+                    name: skill_name,
+                    description: description.unwrap_or_default(),
+                    plugin: "user".to_string(),
+                    content,
+                });
+            }
+        }
+    }
+
+    // 3. User-level custom skills: ~/.claude/commands/*/SKILL.md (alternate location)
+    let user_cmd_skills = claude_dir.join("commands");
+    if let Ok(entries) = fs::read_dir(&user_cmd_skills) {
+        for entry in entries.flatten() {
+            let skill_md = entry.path().join("SKILL.md");
+            if !skill_md.is_file() { continue; }
+            if let Ok(content) = fs::read_to_string(&skill_md) {
+                let (name, description) = parse_frontmatter(&content);
+                let skill_name = name.unwrap_or_else(|| {
+                    entry.file_name().to_string_lossy().to_string()
+                });
+                skills.push(SkillIpc {
+                    name: skill_name,
+                    description: description.unwrap_or_default(),
+                    plugin: "user".to_string(),
+                    content,
+                });
+            }
+        }
+    }
+
+    skills.sort_by(|a, b| a.name.cmp(&b.name));
+    skills.dedup_by(|a, b| a.name == b.name);
+    skills
+}
+
+/// Walk marketplace plugin directories for SKILL.md files.
+fn scan_plugin_skills(plugins_dir: &std::path::Path, skills: &mut Vec<SkillIpc>) {
     let marketplaces = plugins_dir.join("marketplaces");
     if let Ok(marketplace_entries) = fs::read_dir(&marketplaces) {
         for mp_entry in marketplace_entries.flatten() {
@@ -514,7 +579,7 @@ fn scan_skills() -> Vec<SkillIpc> {
                                 if !skill_md.is_file() { continue; }
 
                                 if let Ok(content) = fs::read_to_string(&skill_md) {
-                                    let (name, description) = parse_skill_frontmatter(&content);
+                                    let (name, description) = parse_frontmatter(&content);
                                     let skill_name = name.unwrap_or_else(|| {
                                         skill_entry.file_name().to_string_lossy().to_string()
                                     });
@@ -532,18 +597,92 @@ fn scan_skills() -> Vec<SkillIpc> {
             }
         }
     }
-
-    skills.sort_by(|a, b| a.name.cmp(&b.name));
-    skills
 }
 
-/// Extract name and description from YAML frontmatter in a SKILL.md file.
-fn parse_skill_frontmatter(content: &str) -> (Option<String>, Option<String>) {
+/// Scan plugins and ~/.claude/commands/ for command .md files.
+fn scan_commands() -> Vec<CommandIpc> {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return Vec::new(),
+    };
+    let claude_dir = home.join(".claude");
+
+    let mut commands = Vec::new();
+
+    // 1. Walk marketplaces/*/{ plugins, external_plugins }/*/commands/*.md
+    let marketplaces = claude_dir.join("plugins").join("marketplaces");
+    if let Ok(marketplace_entries) = fs::read_dir(&marketplaces) {
+        for mp_entry in marketplace_entries.flatten() {
+            for subdir in &["plugins", "external_plugins"] {
+                let plugins_path = mp_entry.path().join(subdir);
+                if !plugins_path.is_dir() { continue; }
+
+                if let Ok(plugin_entries) = fs::read_dir(&plugins_path) {
+                    for plugin_entry in plugin_entries.flatten() {
+                        let plugin_name = plugin_entry.file_name().to_string_lossy().to_string();
+                        let cmds_dir = plugin_entry.path().join("commands");
+                        if !cmds_dir.is_dir() { continue; }
+
+                        if let Ok(cmd_entries) = fs::read_dir(&cmds_dir) {
+                            for cmd_entry in cmd_entries.flatten() {
+                                let path = cmd_entry.path();
+                                if path.extension().and_then(|e| e.to_str()) != Some("md") { continue; }
+
+                                if let Ok(content) = fs::read_to_string(&path) {
+                                    let (_, description) = parse_frontmatter(&content);
+                                    let cmd_name = path.file_stem()
+                                        .map(|s| s.to_string_lossy().to_string())
+                                        .unwrap_or_default();
+                                    commands.push(CommandIpc {
+                                        name: cmd_name,
+                                        description: description.unwrap_or_default(),
+                                        plugin: plugin_name.clone(),
+                                        content,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. User-level custom commands: ~/.claude/commands/*.md
+    let user_cmds = claude_dir.join("commands");
+    if let Ok(entries) = fs::read_dir(&user_cmds) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") { continue; }
+            // Skip if this is a SKILL.md (handled in scan_skills)
+            if path.file_name().and_then(|n| n.to_str()) == Some("SKILL.md") { continue; }
+
+            if let Ok(content) = fs::read_to_string(&path) {
+                let (_, description) = parse_frontmatter(&content);
+                let cmd_name = path.file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                commands.push(CommandIpc {
+                    name: cmd_name,
+                    description: description.unwrap_or_default(),
+                    plugin: "user".to_string(),
+                    content,
+                });
+            }
+        }
+    }
+
+    commands.sort_by(|a, b| a.name.cmp(&b.name));
+    commands.dedup_by(|a, b| a.name == b.name);
+    commands
+}
+
+/// Extract name and description from YAML frontmatter.
+fn parse_frontmatter(content: &str) -> (Option<String>, Option<String>) {
     let trimmed = content.trim_start();
     if !trimmed.starts_with("---") {
         return (None, None);
     }
-    // Find the closing ---
     if let Some(end) = trimmed[3..].find("---") {
         let frontmatter = &trimmed[3..3 + end];
         let mut name = None;

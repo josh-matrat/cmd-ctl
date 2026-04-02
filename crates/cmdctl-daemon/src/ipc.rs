@@ -91,6 +91,13 @@ pub enum Request {
     ListSkills,
     /// Get the full content of a skill by name.
     GetSkill { name: String },
+
+    // -- Command operations --
+
+    /// List all available Claude commands.
+    ListCommands,
+    /// Get the full content of a command by name.
+    GetCommand { name: String },
 }
 
 /// Messages sent from the daemon to a client.
@@ -120,6 +127,11 @@ pub enum Response {
 
     SkillList(Vec<SkillIpc>),
     SkillDetail(SkillIpc),
+
+    // -- Command responses --
+
+    CommandList(Vec<CommandIpc>),
+    CommandDetail(CommandIpc),
 }
 
 /// Session metadata for listing.
@@ -201,6 +213,15 @@ pub struct TicketIpc {
 /// Skill entry as exposed over IPC.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillIpc {
+    pub name: String,
+    pub description: String,
+    pub plugin: String,
+    pub content: String,
+}
+
+/// Command entry as exposed over IPC.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandIpc {
     pub name: String,
     pub description: String,
     pub plugin: String,
