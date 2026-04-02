@@ -109,6 +109,8 @@ Providers are configured in `~/.cmdctl/providers.toml`.
 
 Open the ticket portal with `Cmd+W` to get a full-screen overlay for managing tickets.
 
+<img width="2656" height="1612" alt="image" src="https://github.com/user-attachments/assets/d3883b9c-86e2-4eb8-a8a5-1456cf726608" />
+
 **List view** — Browse all tickets sorted by status and priority. Navigate with arrow keys, press `Enter` to view details, `s` to change status, `r` to rename, `n` to create a new ticket, or `R` to force-refresh from all providers.
 
 **Detail view** — Full ticket info with markdown-formatted description. Scroll with arrow keys. Press `s` to update status or `r` to edit the title.
@@ -152,6 +154,9 @@ description: "What this skill does"
 
 Markdown content with instructions, steps, or decision trees...
 ```
+
+<img width="987" height="777" alt="image" src="https://github.com/user-attachments/assets/09c6c180-11e5-4dc8-84df-ba63d914d7bb" />
+
 
 ### Commands
 
