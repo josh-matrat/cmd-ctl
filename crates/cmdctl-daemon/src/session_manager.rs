@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use crossbeam_channel::Receiver;
 use parking_lot::Mutex;
 
@@ -118,15 +118,15 @@ impl SessionManager {
             &agent_type,
         )?;
 
-        // If Claude Code session, resolve the binary to an absolute path and launch.
+        // If Claude Code session, launch claude inside the PTY shell.
+        // The PTY has the full user environment (via /usr/bin/login), so
+        // `claude` resolves correctly through the shell's PATH.
         if agent_type == "claude" {
-            let claude_path = resolve_claude_binary()?;
-            let cmd = if dangerously_skip_permissions {
-                format!("{} --dangerously-skip-permissions\r", claude_path)
+            if dangerously_skip_permissions {
+                session.write(b"claude --dangerously-skip-permissions\r");
             } else {
-                format!("{}\r", claude_path)
-            };
-            session.write(cmd.as_bytes());
+                session.write(b"claude\r");
+            }
         }
 
         let entry = SessionEntry {
@@ -324,31 +324,6 @@ impl SessionManager {
 // ---------------------------------------------------------------------------
 // Binary resolution
 // ---------------------------------------------------------------------------
-
-/// Resolve the `claude` binary to an absolute path to prevent PATH hijacking.
-///
-/// When the app is launched from Finder/Spotlight, the daemon inherits a minimal
-/// launchd environment whose PATH lacks user-installed tool directories
-/// (~/.local/bin, /opt/homebrew/bin, etc.). We spawn a login shell to perform
-/// the lookup so that ~/.zprofile and friends are sourced first.
-fn resolve_claude_binary() -> Result<String> {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-    let output = Command::new(&shell)
-        .args(["-lc", "which claude"])
-        .output()
-        .context("Failed to resolve claude binary via login shell")?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "claude binary not found on PATH — install Claude Code first \
-             (https://docs.anthropic.com/en/docs/claude-code)"
-        );
-    }
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path.is_empty() {
-        anyhow::bail!("claude binary not found on PATH");
-    }
-    Ok(path)
-}
 
 // ---------------------------------------------------------------------------
 // Git worktree helpers

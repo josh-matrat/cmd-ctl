@@ -99,6 +99,12 @@ impl Session {
         let term = Term::new(term_config, &size, event_proxy.clone());
         let term = Arc::new(FairMutex::new(term));
 
+        let mut env = std::collections::HashMap::new();
+        // When launched from Finder the process has no TERM; curses commands
+        // like `clear` fail without it.
+        env.insert("TERM".into(), "xterm-256color".into());
+        env.insert("COLORTERM".into(), "truecolor".into());
+
         let pty_config = tty::Options {
             // Let alacritty use its default macOS shell command, which spawns
             // the shell via /usr/bin/login. This creates a proper login session
@@ -107,6 +113,7 @@ impl Session {
             // launchd environment when the app is launched from Finder/Spotlight.
             shell: None,
             working_directory: working_dir,
+            env,
             ..Default::default()
         };
 
