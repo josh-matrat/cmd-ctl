@@ -4,3 +4,8 @@ target/
 *.sock
 .DS_Store
 providers.toml
+
+# Build artifacts
+*.dmg
+*.zip
+bundle/
