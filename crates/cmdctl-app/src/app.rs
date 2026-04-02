@@ -680,17 +680,6 @@ fn build_native_menu() {
         ];
         let _: () = msg_send![edit_menu, addItem: paste_item];
 
-        let select_all_title = nsstr!(c"Select All");
-        let select_all_key = nsstr!(c"a");
-        let select_all_item: *mut AnyObject = msg_send![AnyClass::get(c"NSMenuItem").unwrap(), alloc];
-        let select_all_item: *mut AnyObject = msg_send![
-            select_all_item,
-            initWithTitle: select_all_title,
-            action: objc2::sel!(selectAll:),
-            keyEquivalent: select_all_key
-        ];
-        let _: () = msg_send![edit_menu, addItem: select_all_item];
-
         let _: () = msg_send![edit_menu_item, setSubmenu: edit_menu];
         let _: () = msg_send![menu_bar, addItem: edit_menu_item];
 
