@@ -1059,6 +1059,18 @@ fn handle_global_command(cmd: &str, key: &str, state: &mut AppState, event_loop:
                 event_loop.exit();
             }
         }
+        "session.minimize" => {
+            // Remove the focused session from its pane (session keeps running).
+            // It can be reopened from the sessions list in the sidebar.
+            if let Focus::Pane(idx) = &state.focus {
+                let idx = *idx;
+                state.panes[idx] = None;
+                state.focus = state.nearest_occupied_pane(idx)
+                    .map(Focus::Pane)
+                    .unwrap_or(Focus::Sidebar);
+                resize_pane_sessions(state, font);
+            }
+        }
         "session.kill" => {
             match &state.focus {
                 Focus::Sidebar => {

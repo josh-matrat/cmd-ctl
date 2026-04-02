@@ -58,6 +58,10 @@ impl KeybindingManager {
             KeyBinding { modifiers: Modifiers::CMD, key: "k".into() },
             "session.kill",
         );
+        bindings.insert(
+            KeyBinding { modifiers: Modifiers::CMD, key: "m".into() },
+            "session.minimize",
+        );
 
         // Cmd-1 through Cmd-4 for pane focus.
         for i in 1..=4u8 {
