@@ -342,7 +342,7 @@ impl ApplicationHandler for CmdctlApp {
                                             for ch in text.chars() {
                                                 if ch == '\n' || ch == '\r' { continue; }
                                                 buf.insert(*cursor, ch);
-                                                *cursor += 1;
+                                                *cursor += ch.len_utf8();
                                             }
                                         }
                                     }
@@ -1622,22 +1622,22 @@ fn handle_ticket_portal_input(key: &Key, state: &mut AppState, _font: &FontInfo)
                     if portal.create_focus == 2 && portal.create.priority > 0 {
                         portal.create.priority -= 1;
                     } else if portal.create_focus < 2 {
-                        let cursor = match portal.create_focus {
-                            0 => &mut portal.create.title_cursor,
-                            _ => &mut portal.create.desc_cursor,
+                        let (input, cursor) = match portal.create_focus {
+                            0 => (&portal.create.title as &str, &mut portal.create.title_cursor),
+                            _ => (&portal.create.description as &str, &mut portal.create.desc_cursor),
                         };
-                        if *cursor > 0 { *cursor -= 1; }
+                        if *cursor > 0 { *cursor = cursor_prev(input, *cursor); }
                     }
                 }
                 Key::Named(NamedKey::ArrowRight) => {
                     if portal.create_focus == 2 && portal.create.priority < 4 {
                         portal.create.priority += 1;
                     } else if portal.create_focus < 2 {
-                        let (len, cursor) = match portal.create_focus {
-                            0 => (portal.create.title.len(), &mut portal.create.title_cursor),
-                            _ => (portal.create.description.len(), &mut portal.create.desc_cursor),
+                        let (input, cursor) = match portal.create_focus {
+                            0 => (&portal.create.title as &str, &mut portal.create.title_cursor),
+                            _ => (&portal.create.description as &str, &mut portal.create.desc_cursor),
                         };
-                        if *cursor < len { *cursor += 1; }
+                        if *cursor < input.len() { *cursor = cursor_next(input, *cursor); }
                     }
                 }
                 Key::Named(NamedKey::Backspace) => {
@@ -1646,7 +1646,10 @@ fn handle_ticket_portal_input(key: &Key, state: &mut AppState, _font: &FontInfo)
                             0 => (&mut portal.create.title, &mut portal.create.title_cursor),
                             _ => (&mut portal.create.description, &mut portal.create.desc_cursor),
                         };
-                        if *cursor > 0 { input.remove(*cursor - 1); *cursor -= 1; }
+                        if *cursor > 0 {
+                            *cursor = cursor_prev(input, *cursor);
+                            input.remove(*cursor);
+                        }
                     }
                 }
                 Key::Character(c) => {
@@ -1655,7 +1658,7 @@ fn handle_ticket_portal_input(key: &Key, state: &mut AppState, _font: &FontInfo)
                             0 => (&mut portal.create.title, &mut portal.create.title_cursor),
                             _ => (&mut portal.create.description, &mut portal.create.desc_cursor),
                         };
-                        for ch in c.chars() { input.insert(*cursor, ch); *cursor += 1; }
+                        for ch in c.chars() { input.insert(*cursor, ch); *cursor += ch.len_utf8(); }
                     }
                 }
                 _ => {}
@@ -1746,10 +1749,13 @@ fn handle_modal_input(key: &Key, state: &mut AppState, font: &FontInfo) {
                 }
                 Key::Named(NamedKey::Escape) => { state.modal = None; }
                 Key::Named(NamedKey::Backspace) => {
-                    if *cursor_pos > 0 { input.remove(*cursor_pos - 1); *cursor_pos -= 1; }
+                    if *cursor_pos > 0 {
+                        *cursor_pos = cursor_prev(input, *cursor_pos);
+                        input.remove(*cursor_pos);
+                    }
                 }
-                Key::Named(NamedKey::ArrowLeft) => { if *cursor_pos > 0 { *cursor_pos -= 1; } }
-                Key::Named(NamedKey::ArrowRight) => { if *cursor_pos < input.len() { *cursor_pos += 1; } }
+                Key::Named(NamedKey::ArrowLeft) => { if *cursor_pos > 0 { *cursor_pos = cursor_prev(input, *cursor_pos); } }
+                Key::Named(NamedKey::ArrowRight) => { if *cursor_pos < input.len() { *cursor_pos = cursor_next(input, *cursor_pos); } }
                 Key::Named(NamedKey::Tab) => {
                     let expanded = shellexpand::tilde(input).to_string();
                     let path = std::path::Path::new(&expanded);
@@ -1780,7 +1786,7 @@ fn handle_modal_input(key: &Key, state: &mut AppState, font: &FontInfo) {
                     }
                 }
                 Key::Character(c) => {
-                    for ch in c.chars() { input.insert(*cursor_pos, ch); *cursor_pos += 1; }
+                    for ch in c.chars() { input.insert(*cursor_pos, ch); *cursor_pos += ch.len_utf8(); }
                 }
                 _ => {}
             }
@@ -1829,12 +1835,16 @@ fn handle_modal_input(key: &Key, state: &mut AppState, font: &FontInfo) {
                     }
                 }
                 Key::Named(NamedKey::Backspace) => {
-                    if *cursor_pos > 0 { input.remove(*cursor_pos - 1); *cursor_pos -= 1; *selected = 0; }
+                    if *cursor_pos > 0 {
+                        *cursor_pos = cursor_prev(input, *cursor_pos);
+                        input.remove(*cursor_pos);
+                        *selected = 0;
+                    }
                 }
-                Key::Named(NamedKey::ArrowLeft) => { if *cursor_pos > 0 { *cursor_pos -= 1; } }
-                Key::Named(NamedKey::ArrowRight) => { if *cursor_pos < input.len() { *cursor_pos += 1; } }
+                Key::Named(NamedKey::ArrowLeft) => { if *cursor_pos > 0 { *cursor_pos = cursor_prev(input, *cursor_pos); } }
+                Key::Named(NamedKey::ArrowRight) => { if *cursor_pos < input.len() { *cursor_pos = cursor_next(input, *cursor_pos); } }
                 Key::Character(c) => {
-                    for ch in c.chars() { input.insert(*cursor_pos, ch); *cursor_pos += 1; }
+                    for ch in c.chars() { input.insert(*cursor_pos, ch); *cursor_pos += ch.len_utf8(); }
                     *selected = 0;
                 }
                 _ => {}
@@ -1852,12 +1862,15 @@ fn handle_modal_input(key: &Key, state: &mut AppState, font: &FontInfo) {
                 }
                 Key::Named(NamedKey::Escape) => { state.modal = None; }
                 Key::Named(NamedKey::Backspace) => {
-                    if *cursor_pos > 0 { input.remove(*cursor_pos - 1); *cursor_pos -= 1; }
+                    if *cursor_pos > 0 {
+                        *cursor_pos = cursor_prev(input, *cursor_pos);
+                        input.remove(*cursor_pos);
+                    }
                 }
-                Key::Named(NamedKey::ArrowLeft) => { if *cursor_pos > 0 { *cursor_pos -= 1; } }
-                Key::Named(NamedKey::ArrowRight) => { if *cursor_pos < input.len() { *cursor_pos += 1; } }
+                Key::Named(NamedKey::ArrowLeft) => { if *cursor_pos > 0 { *cursor_pos = cursor_prev(input, *cursor_pos); } }
+                Key::Named(NamedKey::ArrowRight) => { if *cursor_pos < input.len() { *cursor_pos = cursor_next(input, *cursor_pos); } }
                 Key::Character(c) => {
-                    for ch in c.chars() { input.insert(*cursor_pos, ch); *cursor_pos += 1; }
+                    for ch in c.chars() { input.insert(*cursor_pos, ch); *cursor_pos += ch.len_utf8(); }
                 }
                 _ => {}
             }
@@ -1876,12 +1889,15 @@ fn handle_modal_input(key: &Key, state: &mut AppState, font: &FontInfo) {
                 }
                 Key::Named(NamedKey::Escape) => { state.modal = None; }
                 Key::Named(NamedKey::Backspace) => {
-                    if *cursor_pos > 0 { input.remove(*cursor_pos - 1); *cursor_pos -= 1; }
+                    if *cursor_pos > 0 {
+                        *cursor_pos = cursor_prev(input, *cursor_pos);
+                        input.remove(*cursor_pos);
+                    }
                 }
-                Key::Named(NamedKey::ArrowLeft) => { if *cursor_pos > 0 { *cursor_pos -= 1; } }
-                Key::Named(NamedKey::ArrowRight) => { if *cursor_pos < input.len() { *cursor_pos += 1; } }
+                Key::Named(NamedKey::ArrowLeft) => { if *cursor_pos > 0 { *cursor_pos = cursor_prev(input, *cursor_pos); } }
+                Key::Named(NamedKey::ArrowRight) => { if *cursor_pos < input.len() { *cursor_pos = cursor_next(input, *cursor_pos); } }
                 Key::Character(c) => {
-                    for ch in c.chars() { input.insert(*cursor_pos, ch); *cursor_pos += 1; }
+                    for ch in c.chars() { input.insert(*cursor_pos, ch); *cursor_pos += ch.len_utf8(); }
                 }
                 _ => {}
             }
@@ -1960,22 +1976,22 @@ fn handle_modal_input(key: &Key, state: &mut AppState, font: &FontInfo) {
                     }
                     Key::Named(NamedKey::Backspace) => {
                         if *edit_cursor > 0 {
-                            edit_buffer.remove(*edit_cursor - 1);
-                            *edit_cursor -= 1;
+                            *edit_cursor = cursor_prev(edit_buffer, *edit_cursor);
+                            edit_buffer.remove(*edit_cursor);
                         }
                     }
                     Key::Named(NamedKey::ArrowLeft) => {
-                        if *edit_cursor > 0 { *edit_cursor -= 1; }
+                        if *edit_cursor > 0 { *edit_cursor = cursor_prev(edit_buffer, *edit_cursor); }
                     }
                     Key::Named(NamedKey::ArrowRight) => {
-                        if *edit_cursor < edit_buffer.len() { *edit_cursor += 1; }
+                        if *edit_cursor < edit_buffer.len() { *edit_cursor = cursor_next(edit_buffer, *edit_cursor); }
                     }
                     Key::Named(NamedKey::Home) => { *edit_cursor = 0; }
                     Key::Named(NamedKey::End) => { *edit_cursor = edit_buffer.len(); }
                     Key::Character(c) => {
                         for ch in c.chars() {
                             edit_buffer.insert(*edit_cursor, ch);
-                            *edit_cursor += 1;
+                            *edit_cursor += ch.len_utf8();
                         }
                     }
                     _ => {}
@@ -2071,6 +2087,20 @@ fn list_git_branches(dir: &std::path::Path) -> Vec<String> {
     }
 
     branches
+}
+
+// ---------------------------------------------------------------------------
+// UTF-8–safe cursor helpers for String byte-index cursors
+// ---------------------------------------------------------------------------
+
+/// Move cursor one character to the left (previous char boundary).
+fn cursor_prev(s: &str, pos: usize) -> usize {
+    s[..pos].char_indices().next_back().map(|(i, _)| i).unwrap_or(0)
+}
+
+/// Move cursor one character to the right (next char boundary).
+fn cursor_next(s: &str, pos: usize) -> usize {
+    s[pos..].char_indices().nth(1).map(|(i, _)| pos + i).unwrap_or(s.len())
 }
 
 // ---------------------------------------------------------------------------
@@ -2187,7 +2217,7 @@ fn paste_into_modal(state: &mut AppState, text: &str) {
     for ch in text.chars() {
         if ch == '\n' || ch == '\r' { continue; } // skip newlines in single-line inputs
         buf.insert(*cursor, ch);
-        *cursor += 1;
+        *cursor += ch.len_utf8();
     }
 }
 
