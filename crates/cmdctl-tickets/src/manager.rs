@@ -8,6 +8,7 @@ use tracing;
 use crate::config;
 use crate::imperrium::ImperriumProvider;
 use crate::jira::JiraProvider;
+use crate::mcp;
 use crate::notion::NotionProvider;
 use crate::provider::{Ticket, TicketProvider};
 
@@ -20,6 +21,8 @@ pub struct TicketManager {
     last_refresh: Option<Instant>,
     /// User-set title overrides keyed by ticket key. Applied after each refresh.
     title_overrides: HashMap<String, String>,
+    /// Discovered MCP servers available for ticket fetching.
+    mcp_servers: Vec<mcp::McpServerInfo>,
 }
 
 impl TicketManager {
@@ -51,11 +54,20 @@ impl TicketManager {
             tracing::debug!("No ticket providers configured. Edit ~/.cmdctl/providers.toml to add one.");
         }
 
+        let mcp_servers = mcp::discover_mcp_servers();
+        if !mcp_servers.is_empty() {
+            tracing::info!("Found {} MCP server(s): {:?}",
+                mcp_servers.len(),
+                mcp_servers.iter().map(|s| &s.name).collect::<Vec<_>>()
+            );
+        }
+
         Self {
             providers,
             cached_tickets: Vec::new(),
             last_refresh: None,
             title_overrides: HashMap::new(),
+            mcp_servers,
         }
     }
 
@@ -67,6 +79,11 @@ impl TicketManager {
     /// Returns the names of all configured providers.
     pub fn provider_names(&self) -> Vec<&str> {
         self.providers.iter().map(|p| p.name()).collect()
+    }
+
+    /// Returns the names of all discovered MCP servers.
+    pub fn mcp_server_names(&self) -> Vec<&str> {
+        self.mcp_servers.iter().map(|s| s.name.as_str()).collect()
     }
 
     /// Get cached tickets, refreshing if stale.
@@ -180,6 +197,61 @@ impl TicketManager {
             }
             Err(e) => {
                 tracing::warn!("Failed to fetch tickets from {}: {}", provider_name, e);
+            }
+        }
+    }
+
+    /// Force a refresh from an MCP server by name.
+    /// Spawns the MCP server, fetches tickets, and merges them into the cache.
+    pub fn refresh_mcp_provider(&mut self, mcp_name: &str) {
+        let server = match self.mcp_servers.iter().find(|s| s.name == mcp_name) {
+            Some(s) => s.clone(),
+            None => {
+                tracing::warn!("MCP server '{}' not found", mcp_name);
+                return;
+            }
+        };
+
+        let provider_key = format!("mcp:{}", mcp_name);
+        match mcp::fetch_tickets_via_mcp(&server) {
+            Ok(new_tickets) => {
+                tracing::info!("Fetched {} tickets from MCP server '{}'", new_tickets.len(), mcp_name);
+                // Remove old tickets from this MCP provider.
+                self.cached_tickets.retain(|t| t.provider != provider_key);
+                // Add new tickets.
+                self.cached_tickets.extend(new_tickets);
+                // Deduplicate by key.
+                let mut seen = HashSet::new();
+                self.cached_tickets.retain(|t| seen.insert(t.key.clone()));
+                // Re-sort: blocked/in-progress first, then by priority.
+                self.cached_tickets.sort_by(|a, b| {
+                    let status_ord = |t: &Ticket| -> u8 {
+                        match &t.status {
+                            crate::provider::TicketStatus::Blocked => 0,
+                            crate::provider::TicketStatus::InProgress => 1,
+                            crate::provider::TicketStatus::InReview => 2,
+                            crate::provider::TicketStatus::Todo => 3,
+                            crate::provider::TicketStatus::Done => 5,
+                            crate::provider::TicketStatus::Custom(_) => 4,
+                        }
+                    };
+                    let prio_ord = |t: &Ticket| -> u8 {
+                        match t.priority {
+                            crate::provider::TicketPriority::Critical => 0,
+                            crate::provider::TicketPriority::High => 1,
+                            crate::provider::TicketPriority::Medium => 2,
+                            crate::provider::TicketPriority::Low => 3,
+                            crate::provider::TicketPriority::None => 4,
+                        }
+                    };
+                    status_ord(a).cmp(&status_ord(b))
+                        .then(prio_ord(a).cmp(&prio_ord(b)))
+                });
+                self.apply_title_overrides();
+                self.last_refresh = Some(Instant::now());
+            }
+            Err(e) => {
+                tracing::warn!("Failed to fetch tickets from MCP server '{}': {}", mcp_name, e);
             }
         }
     }

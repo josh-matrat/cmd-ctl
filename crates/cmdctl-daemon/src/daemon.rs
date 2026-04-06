@@ -403,13 +403,22 @@ fn process_request(
         }
 
         Request::ListProviders => {
-            let names = ticket_manager.lock().provider_names()
+            let tm = ticket_manager.lock();
+            let mut names: Vec<String> = tm.provider_names()
                 .into_iter().map(|s| s.to_string()).collect();
+            // Append discovered MCP servers with "mcp:" prefix.
+            for mcp_name in tm.mcp_server_names() {
+                names.push(format!("mcp:{}", mcp_name));
+            }
             Response::ProviderList(names)
         }
         Request::RefreshProviderTickets { provider } => {
             let mut tm = ticket_manager.lock();
-            tm.refresh_provider(&provider);
+            if let Some(mcp_name) = provider.strip_prefix("mcp:") {
+                tm.refresh_mcp_provider(mcp_name);
+            } else {
+                tm.refresh_provider(&provider);
+            }
             let tickets: Vec<TicketIpc> = tm.tickets().iter().map(ticket_to_ipc).collect();
             Response::TicketList(tickets)
         }

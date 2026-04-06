@@ -1,6 +1,7 @@
 pub mod config;
 pub mod provider;
 pub mod manager;
+pub mod mcp;
 
 // Provider implementations
 pub mod jira;

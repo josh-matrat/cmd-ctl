@@ -2005,26 +2005,49 @@ fn build_portal_sync_pick(
     lines.push(StyledLine::new(""));
 
     if portal.sync_providers.is_empty() {
-        lines.push(StyledLine::new("  No providers configured.").fg(colors::ANSI[10]));
-        lines.push(StyledLine::new("  Edit ~/.cmdctl/providers.toml to add one.").fg(colors::ANSI[10]));
+        lines.push(StyledLine::new("  No providers or MCP servers found.").fg(colors::ANSI[10]));
+        lines.push(StyledLine::new("  Edit ~/.cmdctl/providers.toml or ~/.cmdctl/mcp.json").fg(colors::ANSI[10]));
     } else {
         for (i, name) in portal.sync_providers.iter().enumerate() {
             let is_sel = i == portal.sync_selected;
             let marker = if is_sel { "\u{25b6}" } else { " " };
             let sel_bg = if is_sel { [0.15, 0.10, 0.10, 1.0] } else { bg };
-            let tag = match name.as_str() {
-                "jira" => "[J]",
-                "notion" => "[N]",
-                "imperrium" => "[I]",
-                _ => "[?]",
+
+            // Format display based on whether this is an MCP server or built-in provider.
+            let (tag, display_name) = if let Some(mcp_name) = name.strip_prefix("mcp:") {
+                let tag = match mcp_name {
+                    n if n.contains("atlassian") || n.contains("jira") => "[A]",
+                    n if n.contains("notion") => "[N]",
+                    n if n.contains("imperrium") => "[I]",
+                    n if n.contains("linear") => "[L]",
+                    n if n.contains("github") => "[G]",
+                    _ => "[M]",
+                };
+                let capitalized: String = {
+                    let mut chars = mcp_name.chars();
+                    match chars.next() {
+                        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+                        None => String::new(),
+                    }
+                };
+                (tag, format!("{} (MCP)", capitalized))
+            } else {
+                let tag = match name.as_str() {
+                    "jira" => "[J]",
+                    "notion" => "[N]",
+                    "imperrium" => "[I]",
+                    _ => "[?]",
+                };
+                let capitalized: String = {
+                    let mut chars = name.chars();
+                    match chars.next() {
+                        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+                        None => String::new(),
+                    }
+                };
+                (tag, capitalized)
             };
-            let display_name: String = {
-                let mut chars = name.chars();
-                match chars.next() {
-                    Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
-                    None => String::new(),
-                }
-            };
+
             lines.push(
                 StyledLine::new(&format!("  {} {} {}", marker, tag, display_name))
                     .fg(colors::ANSI[15])
