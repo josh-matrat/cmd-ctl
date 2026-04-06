@@ -402,6 +402,18 @@ fn process_request(
             }
         }
 
+        Request::ListProviders => {
+            let names = ticket_manager.lock().provider_names()
+                .into_iter().map(|s| s.to_string()).collect();
+            Response::ProviderList(names)
+        }
+        Request::RefreshProviderTickets { provider } => {
+            let mut tm = ticket_manager.lock();
+            tm.refresh_provider(&provider);
+            let tickets: Vec<TicketIpc> = tm.tickets().iter().map(ticket_to_ipc).collect();
+            Response::TicketList(tickets)
+        }
+
         // -- Knowledge operations --
 
         Request::AddKnowledge { title, content, scope, tags } => {

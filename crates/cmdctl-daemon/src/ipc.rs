@@ -93,6 +93,10 @@ pub enum Request {
     },
     /// Update a ticket's status on its external provider.
     UpdateTicketStatus { key: String, status: String },
+    /// List the names of all configured ticket providers.
+    ListProviders,
+    /// Force refresh tickets from a single provider.
+    RefreshProviderTickets { provider: String },
 
     // -- Skill operations --
 
@@ -132,6 +136,7 @@ pub enum Response {
     TicketList(Vec<TicketIpc>),
     TicketDetail(TicketIpc),
     TicketCreated(TicketIpc),
+    ProviderList(Vec<String>),
 
     // -- Skill responses --
 

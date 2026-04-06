@@ -162,6 +162,24 @@ impl DaemonClient {
         }
     }
 
+    pub fn list_providers(&mut self) -> Result<Vec<String>> {
+        match self.request(Request::ListProviders)? {
+            Response::ProviderList(list) => Ok(list),
+            Response::Error(e) => anyhow::bail!("{}", e),
+            _ => anyhow::bail!("Unexpected response"),
+        }
+    }
+
+    pub fn refresh_provider_tickets(&mut self, provider: &str) -> Result<Vec<TicketIpc>> {
+        match self.request(Request::RefreshProviderTickets {
+            provider: provider.to_string(),
+        })? {
+            Response::TicketList(list) => Ok(list),
+            Response::Error(e) => anyhow::bail!("{}", e),
+            _ => anyhow::bail!("Unexpected response"),
+        }
+    }
+
     // -- Knowledge operations --
 
     pub fn add_knowledge(&mut self, title: &str, content: &str, scope: &str, tags: &str) -> Result<String> {

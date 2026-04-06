@@ -79,6 +79,7 @@ enum PortalMode {
     Detail,
     Create,
     StatusPick,
+    SyncPick,
 }
 
 struct TicketCreateFields {
@@ -110,6 +111,8 @@ struct TicketPortal {
     create: TicketCreateFields,
     create_focus: usize, // 0=title, 1=description, 2=priority
     status_selected: usize,
+    sync_providers: Vec<String>,
+    sync_selected: usize,
 }
 
 enum Direction { Up, Down, Left, Right }
@@ -314,6 +317,30 @@ impl ApplicationHandler for CmdctlApp {
                                 }
                                 state.modal = None;
                                 return;
+                            }
+                        }
+                    }
+
+                    // Cmd+S in ticket portal: open sync provider picker.
+                    if let Key::Character(c) = &event.logical_key {
+                        if c.as_str() == "s" {
+                            if let Some(tp) = &mut state.ticket_portal {
+                                if tp.visible && matches!(tp.mode, PortalMode::List | PortalMode::Detail) {
+                                    match state.client.list_providers() {
+                                        Ok(providers) if !providers.is_empty() => {
+                                            tp.sync_providers = providers;
+                                            tp.sync_selected = 0;
+                                            tp.mode = PortalMode::SyncPick;
+                                        }
+                                        Ok(_) => {
+                                            tracing::warn!("No ticket providers configured");
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Failed to list providers: {}", e);
+                                        }
+                                    }
+                                    return;
+                                }
                             }
                         }
                     }
@@ -1276,6 +1303,8 @@ fn handle_global_command(cmd: &str, key: &str, state: &mut AppState, event_loop:
                     create: TicketCreateFields::default(),
                     create_focus: 0,
                     status_selected: 0,
+                    sync_providers: Vec::new(),
+                    sync_selected: 0,
                 });
             }
         }
@@ -1689,6 +1718,35 @@ fn handle_ticket_portal_input(key: &Key, state: &mut AppState, _font: &FontInfo)
                                 }
                             }
                             Err(e) => tracing::error!("Failed to update ticket status: {}", e),
+                        }
+                    }
+                    portal.mode = PortalMode::List;
+                }
+                _ => {}
+            }
+        }
+        PortalMode::SyncPick => {
+            match key {
+                Key::Named(NamedKey::Escape) => {
+                    portal.mode = PortalMode::List;
+                }
+                Key::Named(NamedKey::ArrowUp) => {
+                    if portal.sync_selected > 0 { portal.sync_selected -= 1; }
+                }
+                Key::Named(NamedKey::ArrowDown) => {
+                    if portal.sync_selected + 1 < portal.sync_providers.len() {
+                        portal.sync_selected += 1;
+                    }
+                }
+                Key::Named(NamedKey::Enter) => {
+                    if portal.sync_selected < portal.sync_providers.len() {
+                        let provider = portal.sync_providers[portal.sync_selected].clone();
+                        match state.client.refresh_provider_tickets(&provider) {
+                            Ok(tickets) => {
+                                state.tickets = tickets;
+                                tracing::info!("Synced tickets from {}", provider);
+                            }
+                            Err(e) => tracing::error!("Failed to sync from {}: {}", provider, e),
                         }
                     }
                     portal.mode = PortalMode::List;
@@ -2883,6 +2941,7 @@ fn render_frame(state: &mut AppState, font: &FontInfo) {
                 PortalMode::Detail => ui_renderer::PortalDisplayMode::Detail,
                 PortalMode::Create => ui_renderer::PortalDisplayMode::Create,
                 PortalMode::StatusPick => ui_renderer::PortalDisplayMode::StatusPick,
+                PortalMode::SyncPick => ui_renderer::PortalDisplayMode::SyncPick,
             };
 
             let portal_state = ui_renderer::TicketPortalState {
@@ -2899,6 +2958,8 @@ fn render_frame(state: &mut AppState, font: &FontInfo) {
                 create_priority: tp.create.priority,
                 create_focus: tp.create_focus,
                 status_selected: tp.status_selected,
+                sync_providers: &tp.sync_providers,
+                sync_selected: tp.sync_selected,
             };
 
             let portal_cells = ui_renderer::build_ticket_portal(

@@ -1657,6 +1657,7 @@ pub enum PortalDisplayMode {
     Detail,
     Create,
     StatusPick,
+    SyncPick,
 }
 
 /// State passed from the app to render the ticket portal.
@@ -1674,6 +1675,8 @@ pub struct TicketPortalState<'a> {
     pub create_priority: usize,
     pub create_focus: usize,
     pub status_selected: usize,
+    pub sync_providers: &'a [String],
+    pub sync_selected: usize,
 }
 
 const STATUS_OPTIONS: &[&str] = &["Todo", "In Progress", "In Review", "Done", "Blocked"];
@@ -1693,6 +1696,7 @@ pub fn build_ticket_portal(
         PortalDisplayMode::Detail => build_portal_detail(cols, rows, portal, atlas, font, scale),
         PortalDisplayMode::Create => build_portal_create(cols, rows, portal, atlas, font, scale),
         PortalDisplayMode::StatusPick => build_portal_status_pick(cols, rows, portal, atlas, font, scale),
+        PortalDisplayMode::SyncPick => build_portal_sync_pick(cols, rows, portal, atlas, font, scale),
     }
 }
 
@@ -1782,7 +1786,7 @@ fn build_portal_list(
     while lines.len() < footer_start { lines.push(StyledLine::new("")); }
     lines.push(StyledLine::new(""));
     lines.push(StyledLine::new("  \u{2191}\u{2193} Navigate   Enter Detail   n New ticket   s Change status").fg(colors::ANSI[10]));
-    lines.push(StyledLine::new("  r  Rename      \u{2318}\u{21a9} Agent    R Refresh        \u{2318}W/Esc Close").fg(colors::ANSI[10]));
+    lines.push(StyledLine::new("  r  Rename   \u{2318}\u{21a9} Agent   R Refresh   \u{2318}S Sync   \u{2318}W/Esc Close").fg(colors::ANSI[10]));
 
     render_lines(&lines, cols, rows, bg, &mut cells, atlas, font, scale);
     cells
@@ -1978,6 +1982,62 @@ fn build_portal_status_pick(
     lines.push(StyledLine::new(""));
     lines.push(StyledLine::new("  \u{2191}\u{2193} Navigate   Enter Confirm   Esc Cancel").fg(colors::ANSI[10]));
     lines.push(StyledLine::new("  Status will be updated on the external provider.").fg(colors::ANSI[10]));
+
+    render_lines(&lines, cols, rows, bg, &mut cells, atlas, font, scale);
+    cells
+}
+
+fn build_portal_sync_pick(
+    cols: usize,
+    rows: usize,
+    portal: &TicketPortalState,
+    atlas: &mut GlyphAtlas,
+    font: &FontInfo,
+    scale: f64,
+) -> Vec<(usize, usize, char, [f32; 4], [f32; 4], bool)> {
+    let bg = colors::BG;
+    let mut cells = portal_cells_init(cols, rows);
+    let mut lines: Vec<StyledLine> = Vec::new();
+    push_logo(&mut lines, bg);
+
+    lines.push(StyledLine::new("  SYNC FROM PROVIDER").fg(colors::ANSI[3]));
+    lines.push(StyledLine::new("  Select a source to pull tickets from.").fg(colors::ANSI[10]));
+    lines.push(StyledLine::new(""));
+
+    if portal.sync_providers.is_empty() {
+        lines.push(StyledLine::new("  No providers configured.").fg(colors::ANSI[10]));
+        lines.push(StyledLine::new("  Edit ~/.cmdctl/providers.toml to add one.").fg(colors::ANSI[10]));
+    } else {
+        for (i, name) in portal.sync_providers.iter().enumerate() {
+            let is_sel = i == portal.sync_selected;
+            let marker = if is_sel { "\u{25b6}" } else { " " };
+            let sel_bg = if is_sel { [0.15, 0.10, 0.10, 1.0] } else { bg };
+            let tag = match name.as_str() {
+                "jira" => "[J]",
+                "notion" => "[N]",
+                "imperrium" => "[I]",
+                _ => "[?]",
+            };
+            let display_name: String = {
+                let mut chars = name.chars();
+                match chars.next() {
+                    Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => String::new(),
+                }
+            };
+            lines.push(
+                StyledLine::new(&format!("  {} {} {}", marker, tag, display_name))
+                    .fg(colors::ANSI[15])
+                    .bg(sel_bg),
+            );
+        }
+    }
+
+    let footer_start = rows.saturating_sub(5);
+    while lines.len() < footer_start { lines.push(StyledLine::new("")); }
+    lines.push(StyledLine::new(""));
+    lines.push(StyledLine::new("  \u{2191}\u{2193} Navigate   Enter Sync   Esc Cancel").fg(colors::ANSI[10]));
+    lines.push(StyledLine::new("  Tickets will be refreshed from the selected provider.").fg(colors::ANSI[10]));
 
     render_lines(&lines, cols, rows, bg, &mut cells, atlas, font, scale);
     cells
