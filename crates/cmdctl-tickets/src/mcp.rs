@@ -32,6 +32,17 @@ pub enum McpTransport {
     },
 }
 
+/// Per-server query configuration for ticket fetching.
+#[derive(Debug, Clone, Default)]
+pub struct McpQueryConfig {
+    /// Board / project key to filter by (e.g., "PROJ", "MYBOARD").
+    pub board: Option<String>,
+    /// User identifier or email to filter assigned tickets.
+    pub assignee: Option<String>,
+    /// Explicit tool arguments to pass (overrides auto-built args).
+    pub tool_args: HashMap<String, Value>,
+}
+
 /// Info about a discovered MCP server.
 #[derive(Debug, Clone)]
 pub struct McpServerInfo {
@@ -39,6 +50,8 @@ pub struct McpServerInfo {
     pub name: String,
     /// Transport configuration.
     pub transport: McpTransport,
+    /// Query configuration for ticket fetching.
+    pub query: McpQueryConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -128,9 +141,19 @@ fn parse_mcp_config(path: &PathBuf) -> Option<Vec<McpServerInfo>> {
             continue;
         };
 
+        // Parse query config: board, assignee, toolArgs.
+        let board = entry.get("board").and_then(|v| v.as_str()).map(String::from);
+        let assignee = entry.get("assignee").and_then(|v| v.as_str()).map(String::from);
+        let tool_args: HashMap<String, Value> = entry
+            .get("toolArgs")
+            .and_then(|v| v.as_object())
+            .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default();
+
         servers.push(McpServerInfo {
             name: name.clone(),
             transport,
+            query: McpQueryConfig { board, assignee, tool_args },
         });
     }
 
@@ -445,25 +468,27 @@ pub fn fetch_tickets_via_mcp(server: &McpServerInfo) -> Result<Vec<Ticket>> {
         tools.iter().filter_map(|t| t.get("name").and_then(|v| v.as_str())).collect::<Vec<_>>()
     );
 
-    // 4. Find a ticket-listing tool.
-    let tool = find_ticket_tool(&tools, &server.name);
-    let tool_name = match tool {
-        Some(name) => name,
+    // 4. Find a ticket-listing tool (returns name + full tool schema).
+    let (tool_name, tool_schema) = match find_ticket_tool(&tools, &server.name) {
+        Some(pair) => pair,
         None => {
             tracing::warn!("No ticket-listing tool found on MCP server '{}'", server.name);
             return Ok(Vec::new());
         }
     };
 
-    tracing::info!("Calling tool '{}' on MCP server '{}'", tool_name, server.name);
+    // 5. Build arguments from the tool's inputSchema and server query config.
+    let arguments = build_tool_args(&tool_name, &tool_schema, &server.query, &server.name);
+    tracing::info!("Calling tool '{}' on MCP server '{}' with args: {}",
+        tool_name, server.name, serde_json::to_string(&arguments).unwrap_or_default());
 
-    // 5. Call the tool.
+    // 6. Call the tool.
     let call_result = client.request("tools/call", serde_json::json!({
         "name": tool_name,
-        "arguments": {}
+        "arguments": arguments,
     }))?;
 
-    // 6. Parse the result into tickets.
+    // 7. Parse the result into tickets.
     let tickets = parse_tool_result(&call_result, &server.name);
 
     tracing::info!("Got {} ticket(s) from MCP server '{}'", tickets.len(), server.name);
@@ -472,11 +497,17 @@ pub fn fetch_tickets_via_mcp(server: &McpServerInfo) -> Result<Vec<Ticket>> {
 }
 
 /// Heuristic to find a tool that lists tickets/issues/tasks.
-fn find_ticket_tool(tools: &[Value], server_name: &str) -> Option<String> {
+/// Returns the tool name and its full schema (for inspecting inputSchema).
+fn find_ticket_tool(tools: &[Value], server_name: &str) -> Option<(String, Value)> {
     // Keywords that suggest a listing operation.
     let list_keywords = ["list", "search", "query", "get_all", "fetch"];
     // Keywords that suggest ticket/issue content.
     let item_keywords = ["issue", "ticket", "task", "page", "card", "item", "bug", "story", "epic"];
+
+    let extract = |tool: &Value| -> Option<(String, Value)> {
+        let name = tool.get("name").and_then(|v| v.as_str())?;
+        Some((name.to_string(), tool.clone()))
+    };
 
     // First pass: find tools matching both a list keyword AND an item keyword.
     for tool in tools {
@@ -488,12 +519,11 @@ fn find_ticket_tool(tools: &[Value], server_name: &str) -> Option<String> {
         let has_item = item_keywords.iter().any(|kw| combined.contains(kw));
 
         if has_list && has_item {
-            return Some(name.to_string());
+            return extract(tool);
         }
     }
 
     // Second pass: match by server name context.
-    // E.g., for "atlassian" server, look for tools with "issue" or "jira" in the name.
     let server_lower = server_name.to_lowercase();
     let server_hints: &[&str] = match server_lower.as_str() {
         s if s.contains("atlassian") || s.contains("jira") => &["issue", "jira", "search"],
@@ -509,7 +539,7 @@ fn find_ticket_tool(tools: &[Value], server_name: &str) -> Option<String> {
         if server_hints.iter().any(|hint| name.contains(hint)) {
             let has_list = list_keywords.iter().any(|kw| name.contains(kw));
             if has_list {
-                return Some(tool.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string());
+                return extract(tool);
             }
         }
     }
@@ -518,11 +548,128 @@ fn find_ticket_tool(tools: &[Value], server_name: &str) -> Option<String> {
     for tool in tools {
         let name = tool.get("name").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
         if list_keywords.iter().any(|kw| name.contains(kw)) {
-            return Some(tool.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string());
+            return extract(tool);
         }
     }
 
     None
+}
+
+/// Build tool arguments from the tool's inputSchema and per-server query config.
+///
+/// Strategy:
+/// 1. If the user supplied explicit `toolArgs`, use those directly.
+/// 2. Otherwise, inspect the tool's inputSchema properties and build args
+///    from the `board` and `assignee` config:
+///    - `jql` / `query` param → build a JQL string from board + assignee
+///    - `boardId` / `board` / `projectKey` param → pass the board value
+///    - `assignee` / `accountId` / `user` param → pass the assignee value
+///    - `maxResults` param → default to 50
+fn build_tool_args(
+    tool_name: &str,
+    tool_schema: &Value,
+    query: &McpQueryConfig,
+    server_name: &str,
+) -> Value {
+    // If explicit toolArgs are configured, use them as-is.
+    if !query.tool_args.is_empty() {
+        return Value::Object(
+            query.tool_args.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        );
+    }
+
+    let props = tool_schema
+        .get("inputSchema")
+        .and_then(|s| s.get("properties"))
+        .and_then(|p| p.as_object());
+
+    let prop_names: Vec<&str> = props
+        .map(|p| p.keys().map(|k| k.as_str()).collect())
+        .unwrap_or_default();
+
+    let mut args = serde_json::Map::new();
+
+    // Check if tool accepts a JQL / query string parameter.
+    let jql_param = prop_names.iter().find(|p| {
+        matches!(p.to_lowercase().as_str(), "jql" | "query" | "search_query" | "filter")
+    });
+
+    if let Some(&param_name) = jql_param {
+        // Build JQL from board + assignee.
+        let jql = build_jql(query.board.as_deref(), query.assignee.as_deref(), server_name);
+        args.insert(param_name.to_string(), Value::String(jql));
+    } else {
+        // No JQL param — try to pass board/assignee as separate params.
+        if let Some(board) = &query.board {
+            if let Some(&param) = prop_names.iter().find(|p| {
+                matches!(p.to_lowercase().as_str(),
+                    "boardid" | "board" | "board_id" | "projectkey" | "project_key" | "project")
+            }) {
+                args.insert(param.to_string(), Value::String(board.clone()));
+            }
+        }
+
+        if let Some(assignee) = &query.assignee {
+            if let Some(&param) = prop_names.iter().find(|p| {
+                matches!(p.to_lowercase().as_str(),
+                    "assignee" | "accountid" | "account_id" | "user" | "userid" | "user_id")
+            }) {
+                args.insert(param.to_string(), Value::String(assignee.clone()));
+            }
+        }
+    }
+
+    // Add maxResults if the tool accepts it and we haven't set it.
+    if let Some(&param) = prop_names.iter().find(|p| {
+        matches!(p.to_lowercase().as_str(), "maxresults" | "max_results" | "limit")
+    }) {
+        if !args.contains_key(param) {
+            args.insert(param.to_string(), Value::Number(50.into()));
+        }
+    }
+
+    // If we still have no args but the tool has required params, log a warning.
+    if args.is_empty() {
+        let required = tool_schema
+            .get("inputSchema")
+            .and_then(|s| s.get("required"))
+            .and_then(|r| r.as_array());
+        if let Some(req) = required {
+            if !req.is_empty() {
+                tracing::warn!(
+                    "MCP tool '{}' on '{}' has required params {:?} but no query config (board/assignee) to fill them. \
+                     Add \"board\" and/or \"assignee\" to the MCP server config.",
+                    tool_name, server_name, req
+                );
+            }
+        }
+    }
+
+    Value::Object(args)
+}
+
+/// Build a JQL query string from optional board and assignee filters.
+fn build_jql(board: Option<&str>, assignee: Option<&str>, server_name: &str) -> String {
+    let mut clauses = Vec::new();
+
+    if let Some(board) = board {
+        clauses.push(format!("project = \"{}\"", board));
+    }
+
+    if let Some(assignee) = assignee {
+        // Support "currentUser()" as a special JQL function.
+        if assignee.contains("()") || assignee.contains("(") {
+            clauses.push(format!("assignee = {}", assignee));
+        } else {
+            clauses.push(format!("assignee = \"{}\"", assignee));
+        }
+    }
+
+    clauses.push("status != Done".to_string());
+
+    let jql = format!("{} ORDER BY priority DESC, updated DESC", clauses.join(" AND "));
+    tracing::debug!("Built JQL for '{}': {}", server_name, jql);
+    jql
 }
 
 /// Parse the result from a tools/call response into Ticket structs.
