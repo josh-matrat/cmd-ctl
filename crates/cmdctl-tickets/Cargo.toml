@@ -9,5 +9,4 @@ serde_json.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 toml.workspace = true
-ureq.workspace = true
 dirs = "6"

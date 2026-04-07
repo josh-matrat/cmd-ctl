@@ -298,108 +298,148 @@ impl Drop for McpProcess {
 }
 
 // ---------------------------------------------------------------------------
-// HTTP transport (Streamable HTTP / SSE)
+// HTTP transport (curl-based, uses system native TLS)
 // ---------------------------------------------------------------------------
 
-use std::io::Read as _;
-use std::time::Duration;
-
-/// MCP client that communicates over HTTP/HTTPS (Streamable HTTP transport).
+/// MCP client that communicates over HTTP/HTTPS via curl.
+/// Uses the same curl-based pattern as the Jira/Notion/Imperrium providers
+/// to ensure native TLS compatibility.
 struct McpHttpClient {
     url: String,
     headers: HashMap<String, String>,
     /// Session ID returned by the server, sent in subsequent requests.
     session_id: Option<String>,
-    /// Shared ureq agent (connection pooling + timeout config).
-    agent: ureq::Agent,
 }
 
 impl McpHttpClient {
     fn new(url: &str, headers: &HashMap<String, String>) -> Self {
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(30)))
-            .build()
-            .new_agent();
-
         Self {
             url: url.to_string(),
             headers: headers.clone(),
             session_id: None,
-            agent,
         }
     }
 
-    /// Send a POST, capture session ID, check status, return body text.
-    fn post(&mut self, body: &str, method: &str) -> Result<String> {
-        let mut req = self.agent.post(&self.url)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json, text/event-stream");
+    /// POST a JSON body via curl, returning (response_headers, response_body).
+    fn post(&mut self, json_body: &str, method: &str) -> Result<String> {
+        let mut args: Vec<String> = vec![
+            "-sS".into(),
+            "-X".into(), "POST".into(),
+            "--max-time".into(), "30".into(),
+            "-H".into(), "Content-Type: application/json".into(),
+            "-H".into(), "Accept: application/json, text/event-stream".into(),
+            // Include response headers in output (separated by blank line).
+            "-i".into(),
+        ];
 
         for (k, v) in &self.headers {
-            req = req.header(k.as_str(), v.as_str());
+            args.push("-H".into());
+            args.push(format!("{}: {}", k, v));
         }
 
         if let Some(ref sid) = self.session_id {
-            req = req.header("Mcp-Session-Id", sid.as_str());
+            args.push("-H".into());
+            args.push(format!("Mcp-Session-Id: {}", sid));
         }
 
-        let response = req
-            .send(body)
-            .with_context(|| format!("HTTP POST to {} failed", self.url))?;
+        // Pass body via stdin to avoid shell escaping issues.
+        args.push("-d".into());
+        args.push("@-".into());
+        args.push(self.url.clone());
 
-        let status = response.status();
+        let mut child = Command::new("curl")
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .with_context(|| format!("Failed to spawn curl for MCP method '{}'", method))?;
 
-        // Capture Mcp-Session-Id from response headers.
-        if let Some(sid) = response.headers().get("mcp-session-id") {
-            if let Ok(s) = sid.to_str() {
-                self.session_id = Some(s.to_string());
+        // Write JSON body to stdin.
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(json_body.as_bytes())
+                .with_context(|| format!("Failed to write body for MCP method '{}'", method))?;
+        }
+
+        let output = child.wait_with_output()
+            .with_context(|| format!("curl failed for MCP method '{}'", method))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("curl error for '{}' (url: {}): {}", method, self.url, stderr.trim());
+        }
+
+        let raw = String::from_utf8_lossy(&output.stdout);
+
+        // curl -i separates headers from body with a blank line (\r\n\r\n).
+        let (header_section, body) = Self::split_headers_body(&raw);
+
+        // Check HTTP status from the first header line.
+        if let Some(status_line) = header_section.lines().next() {
+            if let Some(code_str) = status_line.split_whitespace().nth(1) {
+                if let Ok(code) = code_str.parse::<u16>() {
+                    if code >= 400 {
+                        anyhow::bail!(
+                            "MCP server returned HTTP {} for '{}' (url: {}): {}",
+                            code, method, self.url, body.trim().chars().take(300).collect::<String>()
+                        );
+                    }
+                }
             }
         }
 
-        if !status.is_success() {
-            // Try to read error body for diagnostics.
-            let err_body = response.into_body().read_to_string().unwrap_or_default();
-            anyhow::bail!(
-                "MCP server returned HTTP {} for '{}' (url: {}): {}",
-                status.as_u16(), method, self.url,
-                &err_body[..err_body.len().min(300)]
-            );
+        // Capture Mcp-Session-Id from response headers.
+        for line in header_section.lines() {
+            if let Some(val) = line.strip_prefix("mcp-session-id:").or_else(|| line.strip_prefix("Mcp-Session-Id:")) {
+                self.session_id = Some(val.trim().to_string());
+            }
         }
 
-        let content_type = response.headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
+        // Check if this is an SSE response (Content-Type: text/event-stream).
+        let is_sse = header_section.lines().any(|l| {
+            let lower = l.to_lowercase();
+            lower.starts_with("content-type:") && lower.contains("text/event-stream")
+        });
 
-        let mut body_reader = response.into_body();
-
-        // For SSE responses, read line-by-line and extract JSON-RPC data events.
-        // For plain JSON, read the whole body.
-        if content_type.contains("text/event-stream") {
-            Self::read_sse_response(&mut body_reader, method)
+        if is_sse {
+            Self::extract_json_from_sse(&body)
+                .with_context(|| format!("Failed to parse SSE response for '{}'", method))
         } else {
-            let mut text = String::new();
-            body_reader.as_reader()
-                .read_to_string(&mut text)
-                .with_context(|| format!("Failed to read response body for '{}'", method))?;
-            Ok(text)
+            Ok(body.to_string())
         }
     }
 
-    /// Read an SSE stream, collecting data from events until we find a
-    /// JSON-RPC response (has "id" field). Stops at the first valid response
-    /// instead of waiting for the stream to close.
-    fn read_sse_response(body: &mut ureq::Body, method: &str) -> Result<String> {
-        let reader = std::io::BufReader::new(body.as_reader());
+    /// Split curl -i output into (headers, body) at the first blank line.
+    /// Handles HTTP/1.1 100 Continue responses by skipping them.
+    fn split_headers_body(raw: &str) -> (&str, &str) {
+        // Find the blank line separating headers from body.
+        // Handle both \r\n\r\n and \n\n.
+        let split_pos = raw.find("\r\n\r\n")
+            .map(|p| (p, p + 4))
+            .or_else(|| raw.find("\n\n").map(|p| (p, p + 2)));
+
+        match split_pos {
+            Some((header_end, body_start)) => {
+                let headers = &raw[..header_end];
+                let body = &raw[body_start..];
+                // If the first response is HTTP 100 Continue, skip to the next header block.
+                if headers.contains("100 Continue") || headers.contains("100 continue") {
+                    return Self::split_headers_body(body);
+                }
+                (headers, body)
+            }
+            None => ("", raw),
+        }
+    }
+
+    /// Extract the first JSON-RPC response from SSE-formatted text.
+    fn extract_json_from_sse(body: &str) -> Result<String> {
         let mut current_data = String::new();
 
-        for line in reader.lines() {
-            let line = line.with_context(|| format!("Error reading SSE stream for '{}'", method))?;
-
+        for line in body.lines() {
             if let Some(data) = line.strip_prefix("data: ") {
                 current_data.push_str(data);
-            } else if line.is_empty() && !current_data.is_empty() {
+            } else if line.trim().is_empty() && !current_data.is_empty() {
                 // End of SSE event — check if this is a JSON-RPC response.
                 if let Ok(parsed) = serde_json::from_str::<Value>(&current_data) {
                     if parsed.get("id").is_some() || parsed.get("result").is_some() || parsed.get("error").is_some() {
@@ -410,19 +450,19 @@ impl McpHttpClient {
             }
         }
 
-        // If we reached end-of-stream with pending data, return it.
+        // Return whatever we have if there's pending data.
         if !current_data.is_empty() {
             return Ok(current_data);
         }
 
-        anyhow::bail!("SSE stream ended without a JSON-RPC response for '{}'", method)
+        anyhow::bail!("No JSON-RPC response found in SSE stream")
     }
 
     /// Parse a JSON-RPC response, extracting the result or error.
     fn parse_response(body: &str, method: &str) -> Result<Value> {
         let resp: Value = serde_json::from_str(body)
-            .with_context(|| format!("Invalid JSON response from MCP server for '{}': {}", method,
-                &body[..body.len().min(200)]))?;
+            .with_context(|| format!("Invalid JSON from MCP server for '{}': {}",
+                method, &body[..body.len().min(200)]))?;
 
         if let Some(err) = resp.get("error") {
             let code = err.get("code").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -446,7 +486,7 @@ impl McpClient for McpHttpClient {
 
         let body = serde_json::to_string(&msg)?;
         let response_body = self.post(&body, method)
-            .with_context(|| format!("HTTP request failed for MCP method '{}'", method))?;
+            .with_context(|| format!("Request failed for MCP method '{}'", method))?;
 
         Self::parse_response(&response_body, method)
     }
@@ -459,7 +499,7 @@ impl McpClient for McpHttpClient {
         });
 
         let body = serde_json::to_string(&msg)?;
-        // Notifications may return 202 Accepted or 204 No Content.
+        // Notifications may return 202/204 — ignore errors.
         let _ = self.post(&body, method);
         Ok(())
     }
