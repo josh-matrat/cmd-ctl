@@ -1677,6 +1677,7 @@ pub struct TicketPortalState<'a> {
     pub status_selected: usize,
     pub sync_providers: &'a [String],
     pub sync_selected: usize,
+    pub sync_error: Option<&'a str>,
 }
 
 const STATUS_OPTIONS: &[&str] = &["Todo", "In Progress", "In Review", "Done", "Blocked"];
@@ -1728,10 +1729,17 @@ fn build_portal_list(
     lines.push(StyledLine::new(&format!("  TICKETS ({})", count)).fg(colors::ANSI[3]));
     lines.push(StyledLine::new(""));
 
-    if portal.tickets.is_empty() {
+    // Show sync error if present.
+    if let Some(err) = portal.sync_error {
+        let display_err: String = err.chars().take(cols.saturating_sub(6)).collect();
+        lines.push(StyledLine::new(&format!("  {}", display_err)).fg(colors::ANSI[1]));
+        lines.push(StyledLine::new(""));
+    }
+
+    if portal.tickets.is_empty() && portal.sync_error.is_none() {
         lines.push(StyledLine::new("  No tickets found.").fg(colors::ANSI[10]));
         lines.push(StyledLine::new("  Configure providers in ~/.cmdctl/providers.toml").fg(colors::ANSI[10]));
-    } else {
+    } else if !portal.tickets.is_empty() {
         let key_width = portal.tickets.iter().map(|t| t.key.len()).max().unwrap_or(8).max(8);
         let status_col_width = 12;
         let prefix_width = 6 + key_width + 2;

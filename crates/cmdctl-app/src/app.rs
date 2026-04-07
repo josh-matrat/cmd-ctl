@@ -113,6 +113,8 @@ struct TicketPortal {
     status_selected: usize,
     sync_providers: Vec<String>,
     sync_selected: usize,
+    /// Transient error message shown after a failed sync, cleared on next action.
+    sync_error: Option<String>,
 }
 
 enum Direction { Up, Down, Left, Right }
@@ -330,6 +332,7 @@ impl ApplicationHandler for CmdctlApp {
                                         Ok(providers) if !providers.is_empty() => {
                                             tp.sync_providers = providers;
                                             tp.sync_selected = 0;
+                                            tp.sync_error = None;
                                             tp.mode = PortalMode::SyncPick;
                                         }
                                         Ok(_) => {
@@ -1305,6 +1308,7 @@ fn handle_global_command(cmd: &str, key: &str, state: &mut AppState, event_loop:
                     status_selected: 0,
                     sync_providers: Vec::new(),
                     sync_selected: 0,
+                    sync_error: None,
                 });
             }
         }
@@ -1744,9 +1748,14 @@ fn handle_ticket_portal_input(key: &Key, state: &mut AppState, _font: &FontInfo)
                         match state.client.refresh_provider_tickets(&provider) {
                             Ok(tickets) => {
                                 state.tickets = tickets;
+                                portal.sync_error = None;
                                 tracing::info!("Synced tickets from {}", provider);
                             }
-                            Err(e) => tracing::error!("Failed to sync from {}: {}", provider, e),
+                            Err(e) => {
+                                let msg = format!("Sync failed ({}): {}", provider, e);
+                                tracing::error!("{}", msg);
+                                portal.sync_error = Some(msg);
+                            }
                         }
                     }
                     portal.mode = PortalMode::List;
@@ -2960,6 +2969,7 @@ fn render_frame(state: &mut AppState, font: &FontInfo) {
                 status_selected: tp.status_selected,
                 sync_providers: &tp.sync_providers,
                 sync_selected: tp.sync_selected,
+                sync_error: tp.sync_error.as_deref(),
             };
 
             let portal_cells = ui_renderer::build_ticket_portal(

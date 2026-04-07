@@ -301,26 +301,37 @@ impl Drop for McpProcess {
 // HTTP transport (Streamable HTTP / SSE)
 // ---------------------------------------------------------------------------
 
+use std::io::Read as _;
+use std::time::Duration;
+
 /// MCP client that communicates over HTTP/HTTPS (Streamable HTTP transport).
 struct McpHttpClient {
     url: String,
     headers: HashMap<String, String>,
     /// Session ID returned by the server, sent in subsequent requests.
     session_id: Option<String>,
+    /// Shared ureq agent (connection pooling + timeout config).
+    agent: ureq::Agent,
 }
 
 impl McpHttpClient {
     fn new(url: &str, headers: &HashMap<String, String>) -> Self {
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(30)))
+            .build()
+            .new_agent();
+
         Self {
             url: url.to_string(),
             headers: headers.clone(),
             session_id: None,
+            agent,
         }
     }
 
-    /// Send a POST request with the given JSON body, returning the response.
-    fn post(&self, body: &str) -> Result<ureq::Body> {
-        let mut req = ureq::post(&self.url)
+    /// Send a POST, capture session ID, check status, return body text.
+    fn post(&mut self, body: &str, method: &str) -> Result<String> {
+        let mut req = self.agent.post(&self.url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream");
 
@@ -334,44 +345,92 @@ impl McpHttpClient {
 
         let response = req
             .send(body)
-            .context("HTTP request to MCP server failed")?;
+            .with_context(|| format!("HTTP POST to {} failed", self.url))?;
 
-        // We need access to headers before consuming body, but ureq 3
-        // gives us the body directly. Session ID is extracted in callers
-        // by parsing it from the body wrapper. For ureq 3, the response
-        // IS the body.
-        Ok(response.into_body())
+        let status = response.status();
+
+        // Capture Mcp-Session-Id from response headers.
+        if let Some(sid) = response.headers().get("mcp-session-id") {
+            if let Ok(s) = sid.to_str() {
+                self.session_id = Some(s.to_string());
+            }
+        }
+
+        if !status.is_success() {
+            // Try to read error body for diagnostics.
+            let err_body = response.into_body().read_to_string().unwrap_or_default();
+            anyhow::bail!(
+                "MCP server returned HTTP {} for '{}' (url: {}): {}",
+                status.as_u16(), method, self.url,
+                &err_body[..err_body.len().min(300)]
+            );
+        }
+
+        let content_type = response.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+
+        let mut body_reader = response.into_body();
+
+        // For SSE responses, read line-by-line and extract JSON-RPC data events.
+        // For plain JSON, read the whole body.
+        if content_type.contains("text/event-stream") {
+            Self::read_sse_response(&mut body_reader, method)
+        } else {
+            let mut text = String::new();
+            body_reader.as_reader()
+                .read_to_string(&mut text)
+                .with_context(|| format!("Failed to read response body for '{}'", method))?;
+            Ok(text)
+        }
+    }
+
+    /// Read an SSE stream, collecting data from events until we find a
+    /// JSON-RPC response (has "id" field). Stops at the first valid response
+    /// instead of waiting for the stream to close.
+    fn read_sse_response(body: &mut ureq::Body, method: &str) -> Result<String> {
+        let reader = std::io::BufReader::new(body.as_reader());
+        let mut current_data = String::new();
+
+        for line in reader.lines() {
+            let line = line.with_context(|| format!("Error reading SSE stream for '{}'", method))?;
+
+            if let Some(data) = line.strip_prefix("data: ") {
+                current_data.push_str(data);
+            } else if line.is_empty() && !current_data.is_empty() {
+                // End of SSE event — check if this is a JSON-RPC response.
+                if let Ok(parsed) = serde_json::from_str::<Value>(&current_data) {
+                    if parsed.get("id").is_some() || parsed.get("result").is_some() || parsed.get("error").is_some() {
+                        return Ok(current_data);
+                    }
+                }
+                current_data.clear();
+            }
+        }
+
+        // If we reached end-of-stream with pending data, return it.
+        if !current_data.is_empty() {
+            return Ok(current_data);
+        }
+
+        anyhow::bail!("SSE stream ended without a JSON-RPC response for '{}'", method)
     }
 
     /// Parse a JSON-RPC response, extracting the result or error.
     fn parse_response(body: &str, method: &str) -> Result<Value> {
         let resp: Value = serde_json::from_str(body)
-            .with_context(|| format!("Invalid JSON response from MCP server for '{}'", method))?;
+            .with_context(|| format!("Invalid JSON response from MCP server for '{}': {}", method,
+                &body[..body.len().min(200)]))?;
 
         if let Some(err) = resp.get("error") {
+            let code = err.get("code").and_then(|v| v.as_i64()).unwrap_or(0);
             let msg = err.get("message").and_then(|v| v.as_str()).unwrap_or("Unknown error");
-            anyhow::bail!("MCP server error for '{}': {}", method, msg);
+            anyhow::bail!("MCP server error for '{}': {} (code {})", method, msg, code);
         }
 
         Ok(resp.get("result").cloned().unwrap_or(Value::Null))
-    }
-
-    /// Extract the JSON-RPC response from a potentially SSE-formatted body.
-    /// SSE responses look like: "event: message\ndata: {json}\n\n"
-    fn extract_json_from_sse(body: &str) -> String {
-        let mut data_lines = Vec::new();
-        for line in body.lines() {
-            if let Some(data) = line.strip_prefix("data: ") {
-                data_lines.push(data);
-            }
-        }
-        if data_lines.is_empty() {
-            // Not SSE, return the body as-is.
-            body.to_string()
-        } else {
-            // Join data lines (MCP usually sends a single data line per event).
-            data_lines.join("")
-        }
     }
 }
 
@@ -386,15 +445,10 @@ impl McpClient for McpHttpClient {
         });
 
         let body = serde_json::to_string(&msg)?;
-        let mut response = self.post(&body)
+        let response_body = self.post(&body, method)
             .with_context(|| format!("HTTP request failed for MCP method '{}'", method))?;
 
-        let response_body = response.read_to_string()
-            .with_context(|| format!("Failed to read response body for MCP method '{}'", method))?;
-
-        // Handle both plain JSON and SSE responses.
-        let json_body = Self::extract_json_from_sse(&response_body);
-        Self::parse_response(&json_body, method)
+        Self::parse_response(&response_body, method)
     }
 
     fn notify(&mut self, method: &str, params: Value) -> Result<()> {
@@ -405,10 +459,8 @@ impl McpClient for McpHttpClient {
         });
 
         let body = serde_json::to_string(&msg)?;
-        // Fire and forget — just ensure it doesn't error.
-        let _ = self.post(&body)
-            .with_context(|| format!("HTTP notification failed for MCP method '{}'", method))?;
-
+        // Notifications may return 202 Accepted or 204 No Content.
+        let _ = self.post(&body, method);
         Ok(())
     }
 }
