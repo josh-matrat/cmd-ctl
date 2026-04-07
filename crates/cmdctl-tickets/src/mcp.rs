@@ -314,10 +314,18 @@ struct McpHttpClient {
 }
 
 impl McpHttpClient {
-    fn new(url: &str, headers: &HashMap<String, String>) -> Self {
-        // Create a temp file for the cookie jar so OAuth/session cookies persist
-        // across the initialize → tools/list → tools/call request chain.
-        let cookie_jar = std::env::temp_dir().join(format!("cmdctl-mcp-cookies-{}", std::process::id()));
+    fn new(url: &str, headers: &HashMap<String, String>, server_name: &str) -> Self {
+        // Stable cookie jar per server so OAuth tokens persist across syncs.
+        let cookie_dir = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+            .join(".cmdctl")
+            .join("mcp-cookies");
+        let _ = std::fs::create_dir_all(&cookie_dir);
+        // Sanitize server name for use as filename.
+        let safe_name: String = server_name.chars()
+            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .collect();
+        let cookie_jar = cookie_dir.join(format!("{}.txt", safe_name));
 
         Self {
             url: url.to_string(),
@@ -385,6 +393,17 @@ impl McpHttpClient {
         // curl -i separates headers from body with a blank line (\r\n\r\n).
         let (header_section, body) = Self::split_headers_body(&raw);
 
+        // Capture Mcp-Session-Id from response headers BEFORE checking status,
+        // so auth error responses still establish a session for retry.
+        for line in header_section.lines() {
+            let lower = line.to_lowercase();
+            if lower.starts_with("mcp-session-id:") {
+                if let Some(val) = line.split_once(':').map(|(_, v)| v.trim()) {
+                    self.session_id = Some(val.to_string());
+                }
+            }
+        }
+
         // Check HTTP status from the first header line.
         if let Some(status_line) = header_section.lines().next() {
             if let Some(code_str) = status_line.split_whitespace().nth(1) {
@@ -396,13 +415,6 @@ impl McpHttpClient {
                         );
                     }
                 }
-            }
-        }
-
-        // Capture Mcp-Session-Id from response headers.
-        for line in header_section.lines() {
-            if let Some(val) = line.strip_prefix("mcp-session-id:").or_else(|| line.strip_prefix("Mcp-Session-Id:")) {
-                self.session_id = Some(val.trim().to_string());
             }
         }
 
@@ -485,12 +497,6 @@ impl McpHttpClient {
     }
 }
 
-impl Drop for McpHttpClient {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.cookie_jar);
-    }
-}
-
 impl McpClient for McpHttpClient {
     fn request(&mut self, method: &str, params: Value) -> Result<Value> {
         let id = next_id();
@@ -539,7 +545,7 @@ pub fn fetch_tickets_via_mcp(server: &McpServerInfo) -> Result<Vec<Ticket>> {
             Box::new(McpProcess::spawn(&server.name, command, args, env)?)
         }
         McpTransport::Http { url, headers } => {
-            Box::new(McpHttpClient::new(url, headers))
+            Box::new(McpHttpClient::new(url, headers, &server.name))
         }
     };
 
