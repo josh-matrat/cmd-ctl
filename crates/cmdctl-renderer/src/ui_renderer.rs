@@ -1729,10 +1729,14 @@ fn build_portal_list(
     lines.push(StyledLine::new(&format!("  TICKETS ({})", count)).fg(colors::ANSI[3]));
     lines.push(StyledLine::new(""));
 
-    // Show sync error if present.
+    // Show sync error if present — wrap across multiple lines.
     if let Some(err) = portal.sync_error {
-        let display_err: String = err.chars().take(cols.saturating_sub(6)).collect();
-        lines.push(StyledLine::new(&format!("  {}", display_err)).fg(colors::ANSI[1]));
+        let line_width = cols.saturating_sub(4);
+        let mut chars = err.chars().peekable();
+        while chars.peek().is_some() {
+            let chunk: String = chars.by_ref().take(line_width).collect();
+            lines.push(StyledLine::new(&format!("  {}", chunk)).fg(colors::ANSI[1]));
+        }
         lines.push(StyledLine::new(""));
     }
 
