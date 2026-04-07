@@ -309,25 +309,36 @@ struct McpHttpClient {
     headers: HashMap<String, String>,
     /// Session ID returned by the server, sent in subsequent requests.
     session_id: Option<String>,
+    /// Temp file for curl cookie jar — persists auth cookies across requests.
+    cookie_jar: std::path::PathBuf,
 }
 
 impl McpHttpClient {
     fn new(url: &str, headers: &HashMap<String, String>) -> Self {
+        // Create a temp file for the cookie jar so OAuth/session cookies persist
+        // across the initialize → tools/list → tools/call request chain.
+        let cookie_jar = std::env::temp_dir().join(format!("cmdctl-mcp-cookies-{}", std::process::id()));
+
         Self {
             url: url.to_string(),
             headers: headers.clone(),
             session_id: None,
+            cookie_jar,
         }
     }
 
     /// POST a JSON body via curl, returning (response_headers, response_body).
-    fn post(&mut self, json_body: &str, method: &str) -> Result<String> {
+    fn post(&mut self, json_body: &str, method: &str, timeout_secs: u32) -> Result<String> {
+        let cookie_path = self.cookie_jar.to_string_lossy().to_string();
         let mut args: Vec<String> = vec![
             "-sS".into(),
             "-X".into(), "POST".into(),
-            "--max-time".into(), "30".into(),
+            "--max-time".into(), timeout_secs.to_string(),
             "-H".into(), "Content-Type: application/json".into(),
             "-H".into(), "Accept: application/json, text/event-stream".into(),
+            // Persist cookies across requests (OAuth tokens, session cookies).
+            "-b".into(), cookie_path.clone(),
+            "-c".into(), cookie_path,
             // Include response headers in output (separated by blank line).
             "-i".into(),
         ];
@@ -474,6 +485,12 @@ impl McpHttpClient {
     }
 }
 
+impl Drop for McpHttpClient {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.cookie_jar);
+    }
+}
+
 impl McpClient for McpHttpClient {
     fn request(&mut self, method: &str, params: Value) -> Result<Value> {
         let id = next_id();
@@ -484,8 +501,11 @@ impl McpClient for McpHttpClient {
             "params": params,
         });
 
+        // Allow extra time for initialize (may trigger browser auth flow).
+        let timeout = if method == "initialize" { 120 } else { 30 };
+
         let body = serde_json::to_string(&msg)?;
-        let response_body = self.post(&body, method)
+        let response_body = self.post(&body, method, timeout)
             .with_context(|| format!("Request failed for MCP method '{}'", method))?;
 
         Self::parse_response(&response_body, method)
@@ -500,7 +520,7 @@ impl McpClient for McpHttpClient {
 
         let body = serde_json::to_string(&msg)?;
         // Notifications may return 202/204 — ignore errors.
-        let _ = self.post(&body, method);
+        let _ = self.post(&body, method, 10);
         Ok(())
     }
 }
