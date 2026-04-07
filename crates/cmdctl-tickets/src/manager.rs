@@ -203,57 +203,52 @@ impl TicketManager {
 
     /// Force a refresh from an MCP server by name.
     /// Spawns the MCP server, fetches tickets, and merges them into the cache.
-    pub fn refresh_mcp_provider(&mut self, mcp_name: &str) {
+    pub fn refresh_mcp_provider(&mut self, mcp_name: &str) -> anyhow::Result<()> {
         let server = match self.mcp_servers.iter().find(|s| s.name == mcp_name) {
             Some(s) => s.clone(),
             None => {
-                tracing::warn!("MCP server '{}' not found", mcp_name);
-                return;
+                anyhow::bail!("MCP server '{}' not found", mcp_name);
             }
         };
 
         let provider_key = format!("mcp:{}", mcp_name);
-        match mcp::fetch_tickets_via_mcp(&server) {
-            Ok(new_tickets) => {
-                tracing::info!("Fetched {} tickets from MCP server '{}'", new_tickets.len(), mcp_name);
-                // Remove old tickets from this MCP provider.
-                self.cached_tickets.retain(|t| t.provider != provider_key);
-                // Add new tickets.
-                self.cached_tickets.extend(new_tickets);
-                // Deduplicate by key.
-                let mut seen = HashSet::new();
-                self.cached_tickets.retain(|t| seen.insert(t.key.clone()));
-                // Re-sort: blocked/in-progress first, then by priority.
-                self.cached_tickets.sort_by(|a, b| {
-                    let status_ord = |t: &Ticket| -> u8 {
-                        match &t.status {
-                            crate::provider::TicketStatus::Blocked => 0,
-                            crate::provider::TicketStatus::InProgress => 1,
-                            crate::provider::TicketStatus::InReview => 2,
-                            crate::provider::TicketStatus::Todo => 3,
-                            crate::provider::TicketStatus::Done => 5,
-                            crate::provider::TicketStatus::Custom(_) => 4,
-                        }
-                    };
-                    let prio_ord = |t: &Ticket| -> u8 {
-                        match t.priority {
-                            crate::provider::TicketPriority::Critical => 0,
-                            crate::provider::TicketPriority::High => 1,
-                            crate::provider::TicketPriority::Medium => 2,
-                            crate::provider::TicketPriority::Low => 3,
-                            crate::provider::TicketPriority::None => 4,
-                        }
-                    };
-                    status_ord(a).cmp(&status_ord(b))
-                        .then(prio_ord(a).cmp(&prio_ord(b)))
-                });
-                self.apply_title_overrides();
-                self.last_refresh = Some(Instant::now());
-            }
-            Err(e) => {
-                tracing::warn!("Failed to fetch tickets from MCP server '{}': {}", mcp_name, e);
-            }
-        }
+        let new_tickets = mcp::fetch_tickets_via_mcp(&server)?;
+
+        tracing::info!("Fetched {} tickets from MCP server '{}'", new_tickets.len(), mcp_name);
+        // Remove old tickets from this MCP provider.
+        self.cached_tickets.retain(|t| t.provider != provider_key);
+        // Add new tickets.
+        self.cached_tickets.extend(new_tickets);
+        // Deduplicate by key.
+        let mut seen = HashSet::new();
+        self.cached_tickets.retain(|t| seen.insert(t.key.clone()));
+        // Re-sort: blocked/in-progress first, then by priority.
+        self.cached_tickets.sort_by(|a, b| {
+            let status_ord = |t: &Ticket| -> u8 {
+                match &t.status {
+                    crate::provider::TicketStatus::Blocked => 0,
+                    crate::provider::TicketStatus::InProgress => 1,
+                    crate::provider::TicketStatus::InReview => 2,
+                    crate::provider::TicketStatus::Todo => 3,
+                    crate::provider::TicketStatus::Done => 5,
+                    crate::provider::TicketStatus::Custom(_) => 4,
+                }
+            };
+            let prio_ord = |t: &Ticket| -> u8 {
+                match t.priority {
+                    crate::provider::TicketPriority::Critical => 0,
+                    crate::provider::TicketPriority::High => 1,
+                    crate::provider::TicketPriority::Medium => 2,
+                    crate::provider::TicketPriority::Low => 3,
+                    crate::provider::TicketPriority::None => 4,
+                }
+            };
+            status_ord(a).cmp(&status_ord(b))
+                .then(prio_ord(a).cmp(&prio_ord(b)))
+        });
+        self.apply_title_overrides();
+        self.last_refresh = Some(Instant::now());
+        Ok(())
     }
 
     /// Set a local title override for a ticket. Applied immediately and survives refreshes.

@@ -510,22 +510,22 @@ pub fn fetch_tickets_via_mcp(server: &McpServerInfo) -> Result<Vec<Ticket>> {
         .unwrap_or_default();
 
     if tools.is_empty() {
-        tracing::warn!("MCP server '{}' has no tools", server.name);
-        return Ok(Vec::new());
+        anyhow::bail!("MCP server '{}' returned no tools — check server configuration and auth", server.name);
     }
 
-    tracing::debug!("MCP '{}' has {} tool(s): {:?}",
-        server.name,
-        tools.len(),
-        tools.iter().filter_map(|t| t.get("name").and_then(|v| v.as_str())).collect::<Vec<_>>()
-    );
+    let tool_names: Vec<&str> = tools.iter()
+        .filter_map(|t| t.get("name").and_then(|v| v.as_str()))
+        .collect();
+    tracing::debug!("MCP '{}' has {} tool(s): {:?}", server.name, tools.len(), tool_names);
 
     // 4. Find a ticket-listing tool (returns name + full tool schema).
     let (tool_name, tool_schema) = match find_ticket_tool(&tools, &server.name) {
         Some(pair) => pair,
         None => {
-            tracing::warn!("No ticket-listing tool found on MCP server '{}'", server.name);
-            return Ok(Vec::new());
+            anyhow::bail!(
+                "No ticket-listing tool found on MCP server '{}'. Available tools: {:?}",
+                server.name, tool_names
+            );
         }
     };
 

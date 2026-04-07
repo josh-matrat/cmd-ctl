@@ -414,13 +414,19 @@ fn process_request(
         }
         Request::RefreshProviderTickets { provider } => {
             let mut tm = ticket_manager.lock();
-            if let Some(mcp_name) = provider.strip_prefix("mcp:") {
-                tm.refresh_mcp_provider(mcp_name);
+            let refresh_err = if let Some(mcp_name) = provider.strip_prefix("mcp:") {
+                tm.refresh_mcp_provider(mcp_name).err()
             } else {
                 tm.refresh_provider(&provider);
+                None
+            };
+            match refresh_err {
+                Some(e) => Response::Error(format!("{:#}", e)),
+                None => {
+                    let tickets: Vec<TicketIpc> = tm.tickets().iter().map(ticket_to_ipc).collect();
+                    Response::TicketList(tickets)
+                }
             }
-            let tickets: Vec<TicketIpc> = tm.tickets().iter().map(ticket_to_ipc).collect();
-            Response::TicketList(tickets)
         }
 
         // -- Knowledge operations --
