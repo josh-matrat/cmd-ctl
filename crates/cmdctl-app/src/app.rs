@@ -115,6 +115,8 @@ struct TicketPortal {
     sync_selected: usize,
     /// Transient error message shown after a failed sync, cleared on next action.
     sync_error: Option<String>,
+    /// Receiver for background sync results. Present while a sync is in flight.
+    sync_rx: Option<std::sync::mpsc::Receiver<Result<Vec<cmdctl_daemon::ipc::TicketIpc>, String>>>,
 }
 
 enum Direction { Up, Down, Left, Right }
@@ -635,6 +637,26 @@ impl ApplicationHandler for CmdctlApp {
 
                 // Deliver pending prompts once Claude is ready (blocked on prompt).
                 drain_pending_prompts(state);
+
+                // Check for completed background sync.
+                if let Some(tp) = &mut state.ticket_portal {
+                    if let Some(rx) = &tp.sync_rx {
+                        if let Ok(result) = rx.try_recv() {
+                            match result {
+                                Ok(tickets) => {
+                                    state.tickets = tickets;
+                                    tp.sync_error = None;
+                                    tracing::info!("Background sync complete: {} tickets", state.tickets.len());
+                                }
+                                Err(msg) => {
+                                    tracing::error!("Background sync failed: {}", msg);
+                                    tp.sync_error = Some(msg);
+                                }
+                            }
+                            tp.sync_rx = None;
+                        }
+                    }
+                }
 
                 // Refresh tickets (cached in daemon, cheap to call each frame).
                 if let Ok(tickets) = state.client.list_tickets() {
@@ -1309,6 +1331,7 @@ fn handle_global_command(cmd: &str, key: &str, state: &mut AppState, event_loop:
                     sync_providers: Vec::new(),
                     sync_selected: 0,
                     sync_error: None,
+                    sync_rx: None,
                 });
             }
         }
@@ -1745,18 +1768,17 @@ fn handle_ticket_portal_input(key: &Key, state: &mut AppState, _font: &FontInfo)
                 Key::Named(NamedKey::Enter) => {
                     if portal.sync_selected < portal.sync_providers.len() {
                         let provider = portal.sync_providers[portal.sync_selected].clone();
-                        match state.client.refresh_provider_tickets(&provider) {
-                            Ok(tickets) => {
-                                state.tickets = tickets;
-                                portal.sync_error = None;
-                                tracing::info!("Synced tickets from {}", provider);
-                            }
-                            Err(e) => {
-                                let msg = format!("Sync failed ({}): {}", provider, e);
-                                tracing::error!("{}", msg);
-                                portal.sync_error = Some(msg);
-                            }
-                        }
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        portal.sync_rx = Some(rx);
+                        portal.sync_error = Some(format!("Syncing from {}...", provider));
+
+                        // Connect to the daemon in a background thread so UI stays responsive
+                        // (the MCP server may require interactive auth in a browser).
+                        std::thread::spawn(move || {
+                            let result = cmdctl_daemon::client::DaemonClient::connect()
+                                .and_then(|mut c| c.refresh_provider_tickets(&provider));
+                            let _ = tx.send(result.map_err(|e| format!("{:#}", e)));
+                        });
                     }
                     portal.mode = PortalMode::List;
                 }
