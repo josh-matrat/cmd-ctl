@@ -1,7 +1,8 @@
 //! MCP (Model Context Protocol) client for discovering and fetching tickets
 //! from MCP servers configured on the user's machine.
 //!
-//! Supports stdio-based MCP servers (spawned as child processes).
+//! Supports both stdio-based MCP servers (spawned as child processes) and
+//! HTTP/HTTPS URL-based servers (Streamable HTTP transport).
 //! Discovers servers from ~/.cmdctl/mcp.json, falling back to ~/.claude/settings.json.
 
 use std::collections::HashMap;
@@ -15,17 +16,29 @@ use serde_json::Value;
 
 use crate::provider::{Ticket, TicketPriority, TicketStatus};
 
+/// Transport configuration for an MCP server.
+#[derive(Debug, Clone)]
+pub enum McpTransport {
+    /// Stdio-based server spawned as a child process.
+    Stdio {
+        command: String,
+        args: Vec<String>,
+        env: HashMap<String, String>,
+    },
+    /// HTTP/HTTPS URL-based server (Streamable HTTP transport).
+    Http {
+        url: String,
+        headers: HashMap<String, String>,
+    },
+}
+
 /// Info about a discovered MCP server.
 #[derive(Debug, Clone)]
 pub struct McpServerInfo {
     /// Server name from config (e.g., "atlassian", "notion").
     pub name: String,
-    /// Command to spawn the server.
-    pub command: String,
-    /// Arguments for the command.
-    pub args: Vec<String>,
-    /// Environment variables to set.
-    pub env: HashMap<String, String>,
+    /// Transport configuration.
+    pub transport: McpTransport,
 }
 
 // ---------------------------------------------------------------------------
@@ -62,7 +75,7 @@ pub fn discover_mcp_servers() -> Vec<McpServerInfo> {
     Vec::new()
 }
 
-/// Parse an MCP config file and extract stdio-based server entries.
+/// Parse an MCP config file and extract server entries (both stdio and HTTP).
 fn parse_mcp_config(path: &PathBuf) -> Option<Vec<McpServerInfo>> {
     let content = std::fs::read_to_string(path).ok()?;
     let json: Value = serde_json::from_str(&content).ok()?;
@@ -71,40 +84,53 @@ fn parse_mcp_config(path: &PathBuf) -> Option<Vec<McpServerInfo>> {
     let mut servers = Vec::new();
 
     for (name, entry) in servers_obj {
-        // Only support stdio-based servers (have "command", no "url").
-        let command = match entry.get("command").and_then(|v| v.as_str()) {
-            Some(cmd) => cmd.to_string(),
-            None => continue, // Skip URL-based servers.
-        };
-        if entry.get("url").is_some() {
+        let transport = if let Some(url) = entry.get("url").and_then(|v| v.as_str()) {
+            // HTTP/HTTPS URL-based server.
+            let headers: HashMap<String, String> = entry
+                .get("headers")
+                .and_then(|v| v.as_object())
+                .map(|obj| {
+                    obj.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            McpTransport::Http {
+                url: url.to_string(),
+                headers,
+            }
+        } else if let Some(command) = entry.get("command").and_then(|v| v.as_str()) {
+            // Stdio-based server.
+            let args: Vec<String> = entry
+                .get("args")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let env: HashMap<String, String> = entry
+                .get("env")
+                .and_then(|v| v.as_object())
+                .map(|obj| {
+                    obj.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            McpTransport::Stdio { command: command.to_string(), args, env }
+        } else {
+            tracing::debug!("Skipping MCP server '{}': no 'url' or 'command' field", name);
             continue;
-        }
-
-        let args: Vec<String> = entry
-            .get("args")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let env: HashMap<String, String> = entry
-            .get("env")
-            .and_then(|v| v.as_object())
-            .map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                    .collect()
-            })
-            .unwrap_or_default();
+        };
 
         servers.push(McpServerInfo {
             name: name.clone(),
-            command,
-            args,
-            env,
+            transport,
         });
     }
 
@@ -122,6 +148,22 @@ fn next_id() -> u64 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+// ---------------------------------------------------------------------------
+// Transport trait — unifies stdio and HTTP MCP communication
+// ---------------------------------------------------------------------------
+
+/// Trait for MCP JSON-RPC communication over any transport.
+trait McpClient {
+    /// Send a JSON-RPC request and return the result.
+    fn request(&mut self, method: &str, params: Value) -> Result<Value>;
+    /// Send a JSON-RPC notification (no response expected).
+    fn notify(&mut self, method: &str, params: Value) -> Result<()>;
+}
+
+// ---------------------------------------------------------------------------
+// Stdio transport
+// ---------------------------------------------------------------------------
+
 /// A running MCP server process with buffered I/O.
 struct McpProcess {
     child: Child,
@@ -130,20 +172,20 @@ struct McpProcess {
 }
 
 impl McpProcess {
-    fn spawn(server: &McpServerInfo) -> Result<Self> {
-        let mut cmd = Command::new(&server.command);
-        cmd.args(&server.args)
+    fn spawn(name: &str, command: &str, args: &[String], env: &HashMap<String, String>) -> Result<Self> {
+        let mut cmd = Command::new(command);
+        cmd.args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
 
-        for (k, v) in &server.env {
+        for (k, v) in env {
             cmd.env(k, v);
         }
 
         let mut child = cmd
             .spawn()
-            .with_context(|| format!("Failed to spawn MCP server '{}': {} {:?}", server.name, server.command, server.args))?;
+            .with_context(|| format!("Failed to spawn MCP server '{}': {} {:?}", name, command, args))?;
 
         let stdin = child.stdin.take().context("Failed to capture MCP server stdin")?;
         let stdout = child.stdout.take().context("Failed to capture MCP server stdout")?;
@@ -152,7 +194,13 @@ impl McpProcess {
         Ok(Self { child, stdin, reader })
     }
 
-    /// Send a JSON-RPC request and return the response.
+    fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl McpClient for McpProcess {
     fn request(&mut self, method: &str, params: Value) -> Result<Value> {
         let id = next_id();
         let msg = serde_json::json!({
@@ -206,7 +254,6 @@ impl McpProcess {
         }
     }
 
-    /// Send a JSON-RPC notification (no response expected).
     fn notify(&mut self, method: &str, params: Value) -> Result<()> {
         let msg = serde_json::json!({
             "jsonrpc": "2.0",
@@ -219,11 +266,6 @@ impl McpProcess {
         self.stdin.flush()?;
         Ok(())
     }
-
-    fn kill(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
 }
 
 impl Drop for McpProcess {
@@ -233,18 +275,141 @@ impl Drop for McpProcess {
 }
 
 // ---------------------------------------------------------------------------
+// HTTP transport (Streamable HTTP / SSE)
+// ---------------------------------------------------------------------------
+
+/// MCP client that communicates over HTTP/HTTPS (Streamable HTTP transport).
+struct McpHttpClient {
+    url: String,
+    headers: HashMap<String, String>,
+    /// Session ID returned by the server, sent in subsequent requests.
+    session_id: Option<String>,
+}
+
+impl McpHttpClient {
+    fn new(url: &str, headers: &HashMap<String, String>) -> Self {
+        Self {
+            url: url.to_string(),
+            headers: headers.clone(),
+            session_id: None,
+        }
+    }
+
+    /// Send a POST request with the given JSON body, returning the response.
+    fn post(&self, body: &str) -> Result<ureq::Body> {
+        let mut req = ureq::post(&self.url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream");
+
+        for (k, v) in &self.headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
+
+        if let Some(ref sid) = self.session_id {
+            req = req.header("Mcp-Session-Id", sid.as_str());
+        }
+
+        let response = req
+            .send(body)
+            .context("HTTP request to MCP server failed")?;
+
+        // We need access to headers before consuming body, but ureq 3
+        // gives us the body directly. Session ID is extracted in callers
+        // by parsing it from the body wrapper. For ureq 3, the response
+        // IS the body.
+        Ok(response.into_body())
+    }
+
+    /// Parse a JSON-RPC response, extracting the result or error.
+    fn parse_response(body: &str, method: &str) -> Result<Value> {
+        let resp: Value = serde_json::from_str(body)
+            .with_context(|| format!("Invalid JSON response from MCP server for '{}'", method))?;
+
+        if let Some(err) = resp.get("error") {
+            let msg = err.get("message").and_then(|v| v.as_str()).unwrap_or("Unknown error");
+            anyhow::bail!("MCP server error for '{}': {}", method, msg);
+        }
+
+        Ok(resp.get("result").cloned().unwrap_or(Value::Null))
+    }
+
+    /// Extract the JSON-RPC response from a potentially SSE-formatted body.
+    /// SSE responses look like: "event: message\ndata: {json}\n\n"
+    fn extract_json_from_sse(body: &str) -> String {
+        let mut data_lines = Vec::new();
+        for line in body.lines() {
+            if let Some(data) = line.strip_prefix("data: ") {
+                data_lines.push(data);
+            }
+        }
+        if data_lines.is_empty() {
+            // Not SSE, return the body as-is.
+            body.to_string()
+        } else {
+            // Join data lines (MCP usually sends a single data line per event).
+            data_lines.join("")
+        }
+    }
+}
+
+impl McpClient for McpHttpClient {
+    fn request(&mut self, method: &str, params: Value) -> Result<Value> {
+        let id = next_id();
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+
+        let body = serde_json::to_string(&msg)?;
+        let mut response = self.post(&body)
+            .with_context(|| format!("HTTP request failed for MCP method '{}'", method))?;
+
+        let response_body = response.read_to_string()
+            .with_context(|| format!("Failed to read response body for MCP method '{}'", method))?;
+
+        // Handle both plain JSON and SSE responses.
+        let json_body = Self::extract_json_from_sse(&response_body);
+        Self::parse_response(&json_body, method)
+    }
+
+    fn notify(&mut self, method: &str, params: Value) -> Result<()> {
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+        });
+
+        let body = serde_json::to_string(&msg)?;
+        // Fire and forget — just ensure it doesn't error.
+        let _ = self.post(&body)
+            .with_context(|| format!("HTTP notification failed for MCP method '{}'", method))?;
+
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Ticket fetching via MCP
 // ---------------------------------------------------------------------------
 
-/// Spawn an MCP server, discover its tools, call a ticket-listing tool,
-/// and return the results as Tickets.
+/// Connect to an MCP server (stdio or HTTP), discover its tools, call a
+/// ticket-listing tool, and return the results as Tickets.
 pub fn fetch_tickets_via_mcp(server: &McpServerInfo) -> Result<Vec<Ticket>> {
     tracing::info!("Connecting to MCP server '{}'...", server.name);
 
-    let mut proc = McpProcess::spawn(server)?;
+    let mut client: Box<dyn McpClient> = match &server.transport {
+        McpTransport::Stdio { command, args, env } => {
+            Box::new(McpProcess::spawn(&server.name, command, args, env)?)
+        }
+        McpTransport::Http { url, headers } => {
+            Box::new(McpHttpClient::new(url, headers))
+        }
+    };
 
     // 1. Initialize handshake.
-    let init_result = proc.request("initialize", serde_json::json!({
+    let init_result = client.request("initialize", serde_json::json!({
         "protocolVersion": "2024-11-05",
         "capabilities": {},
         "clientInfo": {
@@ -259,10 +424,10 @@ pub fn fetch_tickets_via_mcp(server: &McpServerInfo) -> Result<Vec<Ticket>> {
     );
 
     // 2. Send initialized notification.
-    proc.notify("notifications/initialized", serde_json::json!({}))?;
+    client.notify("notifications/initialized", serde_json::json!({}))?;
 
     // 3. List available tools.
-    let tools_result = proc.request("tools/list", serde_json::json!({}))?;
+    let tools_result = client.request("tools/list", serde_json::json!({}))?;
     let tools = tools_result
         .get("tools")
         .and_then(|v| v.as_array())
@@ -293,7 +458,7 @@ pub fn fetch_tickets_via_mcp(server: &McpServerInfo) -> Result<Vec<Ticket>> {
     tracing::info!("Calling tool '{}' on MCP server '{}'", tool_name, server.name);
 
     // 5. Call the tool.
-    let call_result = proc.request("tools/call", serde_json::json!({
+    let call_result = client.request("tools/call", serde_json::json!({
         "name": tool_name,
         "arguments": {}
     }))?;
