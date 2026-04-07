@@ -33,32 +33,32 @@ pub struct McpServerInfo {
 // ---------------------------------------------------------------------------
 
 /// Discover MCP servers from config files.
-/// Checks ~/.cmdctl/mcp.json first, then falls back to ~/.claude/settings.json.
+/// Checks config files in priority order:
+/// 1. ~/.cmdctl/mcp.json (CMD-CTL's own config)
+/// 2. ~/.claude/.mcp.json (Claude Code MCP config)
+/// 3. ~/.claude/settings.json (Claude Code settings, may contain mcpServers)
 pub fn discover_mcp_servers() -> Vec<McpServerInfo> {
     let home = match dirs::home_dir() {
         Some(h) => h,
         None => return Vec::new(),
     };
 
-    // Primary: CMD-CTL's own config.
-    let cmdctl_path = home.join(".cmdctl").join("mcp.json");
-    if let Some(servers) = parse_mcp_config(&cmdctl_path) {
-        if !servers.is_empty() {
-            tracing::info!("Discovered {} MCP server(s) from {}", servers.len(), cmdctl_path.display());
-            return servers;
+    let candidates = [
+        home.join(".cmdctl").join("mcp.json"),
+        home.join(".claude").join(".mcp.json"),
+        home.join(".claude").join("settings.json"),
+    ];
+
+    for path in &candidates {
+        if let Some(servers) = parse_mcp_config(path) {
+            if !servers.is_empty() {
+                tracing::info!("Discovered {} MCP server(s) from {}", servers.len(), path.display());
+                return servers;
+            }
         }
     }
 
-    // Fallback: Claude Code settings.
-    let claude_path = home.join(".claude").join("settings.json");
-    if let Some(servers) = parse_mcp_config(&claude_path) {
-        if !servers.is_empty() {
-            tracing::info!("Discovered {} MCP server(s) from {}", servers.len(), claude_path.display());
-            return servers;
-        }
-    }
-
-    tracing::debug!("No MCP servers found in ~/.cmdctl/mcp.json or ~/.claude/settings.json");
+    tracing::debug!("No MCP servers found in {:?}", candidates.iter().map(|p| p.display().to_string()).collect::<Vec<_>>());
     Vec::new()
 }
 
