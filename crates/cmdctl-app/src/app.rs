@@ -572,14 +572,29 @@ impl ApplicationHandler for CmdctlApp {
                 } else {
                     let rects = compute_pane_rects(state.cols as usize, state.rows as usize, state.pane_count());
                     let occupied: Vec<usize> = (0..4).filter(|i| state.panes[*i].is_some()).collect();
+                    let cmd_held = self.modifiers.super_key();
                     for (rect_idx, rect) in rects.iter().enumerate() {
                         if click_col >= rect.col && click_col < rect.col + rect.cols
                             && click_row >= rect.row && click_row < rect.row + rect.rows
                         {
                             if let Some(&slot) = occupied.get(rect_idx) {
-                                state.focus = Focus::Pane(slot);
                                 let pane_col = click_col - rect.col;
                                 let pane_row = click_row - rect.row;
+                                if cmd_held {
+                                    if let Some(session_id) = state.panes[slot].clone() {
+                                        if let Ok(grid) = state.client.get_grid(&session_id) {
+                                            let spans = crate::url_detect::find_urls(&grid);
+                                            if let Some(hit) = spans.iter().find(|s| s.contains(pane_row, pane_col)) {
+                                                if let Err(e) = open::that(&hit.url) {
+                                                    tracing::warn!("Failed to open URL {}: {}", hit.url, e);
+                                                }
+                                                state.focus = Focus::Pane(slot);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                state.focus = Focus::Pane(slot);
                                 state.selection = Some(Selection {
                                     pane_slot: slot,
                                     start: (pane_col, pane_row),
@@ -1126,9 +1141,11 @@ fn navigate_focus(state: &mut AppState, dir: Direction) {
 
 fn create_session(state: &mut AppState, name: &str, agent_type: &str, working_dir: Option<std::path::PathBuf>, base_branch: Option<&str>, font: &FontInfo) {
     let wd = working_dir.map(|p| p.to_string_lossy().to_string());
-    let skip_perms = agent_type == "claude"
-        && crate::settings::load_app_settings().general.claude_dangerously_skip_permissions;
-    match state.client.create_session(name, agent_type, wd.as_deref(), base_branch, skip_perms) {
+    let settings = crate::settings::load_app_settings();
+    let is_claude = agent_type == "claude";
+    let skip_perms = is_claude && settings.general.claude_dangerously_skip_permissions;
+    let accept_edits = is_claude && settings.general.claude_accept_edits;
+    match state.client.create_session(name, agent_type, wd.as_deref(), base_branch, skip_perms, accept_edits) {
         Ok(session_id) => {
             if let Some(slot) = state.first_empty_slot() {
                 // Auto-assign to the next free pane slot.
@@ -1345,7 +1362,7 @@ fn handle_global_command(cmd: &str, key: &str, state: &mut AppState, event_loop:
                 let home = dirs::home_dir()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| "~".to_string());
-                match state.client.create_session("Quick Terminal", "shell", Some(&home), None, false) {
+                match state.client.create_session("Quick Terminal", "shell", Some(&home), None, false, false) {
                     Ok(session_id) => {
                         state.quick_terminal = Some(QuickTerminal {
                             session_id,
@@ -1502,8 +1519,10 @@ fn handle_sidebar_input(key: &Key, state: &mut AppState, font: &FontInfo) {
 
 /// Open a Claude session pre-loaded with ticket context.
 fn open_ticket_session(state: &mut AppState, name: &str, working_dir: &str, context_prompt: &str, font: &FontInfo) {
-    let skip_perms = crate::settings::load_app_settings().general.claude_dangerously_skip_permissions;
-    match state.client.create_session(name, "claude", Some(working_dir), None, skip_perms) {
+    let settings = crate::settings::load_app_settings();
+    let skip_perms = settings.general.claude_dangerously_skip_permissions;
+    let accept_edits = settings.general.claude_accept_edits;
+    match state.client.create_session(name, "claude", Some(working_dir), None, skip_perms, accept_edits) {
         Ok(session_id) => {
             if let Some(slot) = state.first_empty_slot() {
                 state.panes[slot] = Some(session_id.clone());

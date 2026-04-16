@@ -1,5 +1,6 @@
 mod app;
 mod settings;
+mod url_detect;
 
 use anyhow::Result;
 

@@ -29,3 +29,5 @@ toml.workspace = true
 dirs = "6"
 shellexpand = "3"
 arboard = "3"
+regex.workspace = true
+open = "5"
